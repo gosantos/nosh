@@ -135,42 +135,41 @@ fn render_empty_state(frame: &mut Frame, area: Rect) {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let content = match app.input_mode {
-        InputMode::Normal => {
-            let nav = Line::from(vec![
-                Span::styled("nav ", Style::default().fg(Color::DarkGray)),
-                Span::styled("↑", Style::default().fg(Color::Cyan).bold()),
-                Span::styled(" / ", Style::default().fg(Color::DarkGray)),
-                Span::styled("↓", Style::default().fg(Color::Cyan).bold()),
-            ]);
-            let actions = Line::from(vec![
-                Span::styled("n", Style::default().fg(Color::Green).bold()),
-                Span::raw(" new  "),
-                Span::styled("e", Style::default().fg(Color::Green).bold()),
-                Span::raw(" edit  "),
-                Span::styled("space", Style::default().fg(Color::Yellow).bold()),
-                Span::raw(" toggle  "),
-                Span::styled("d", Style::default().fg(Color::Red).bold()),
-                Span::raw(" delete  "),
-                Span::styled("q", Style::default().fg(Color::Red).bold()),
-                Span::raw(" quit"),
-            ]);
-            vec![nav, actions]
-        }
+    let (text, style) = match app.input_mode {
+        InputMode::Normal => (
+            vec![
+                Span::styled("  q ", Style::default().fg(Color::Red).bold()),
+                Span::raw("quit  "),
+                Span::styled("n ", Style::default().fg(Color::Green).bold()),
+                Span::raw("new  "),
+                Span::styled("e ", Style::default().fg(Color::Green).bold()),
+                Span::raw("edit  "),
+                Span::styled("d ", Style::default().fg(Color::Red).bold()),
+                Span::raw("delete  "),
+                Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
+                Span::raw("toggle  "),
+                Span::styled("\u{2191}/\u{2193} ", Style::default().fg(Color::Cyan).bold()),
+                Span::raw("navigate"),
+            ],
+            Style::default(),
+        ),
         InputMode::Adding | InputMode::Editing => {
             let label = match app.input_mode {
-                InputMode::Editing => "EDIT: ",
-                _ => "NEW: ",
+                InputMode::Editing => " EDIT: ",
+                _ => " INPUT: ",
             };
-            vec![Line::from(vec![
-                Span::styled(label, Style::default().fg(Color::Green).bold()),
-                Span::raw(&app.input_buffer),
-                Span::styled("   ", Style::default()),
-                Span::styled("Enter", Style::default().fg(Color::Green).bold()),
-                Span::raw(" save  "),
-                Span::styled("Esc", Style::default().fg(Color::Red).bold()),
-                Span::raw(" cancel"),
-            ])]
+            (
+                vec![
+                    Span::styled(label, Style::default().fg(Color::Green).bold()),
+                    Span::raw(&app.input_buffer),
+                    Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
+                    Span::raw("save  "),
+                    Span::styled("Esc ", Style::default().fg(Color::Red).bold()),
+                    Span::raw("cancel"),
+                ],
+                Style::default(),
+            )
         }
     };
 
@@ -179,8 +178,5 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(Color::Cyan));
     let inner = footer.inner(area);
     frame.render_widget(footer, area);
-    frame.render_widget(
-        Paragraph::new(content).alignment(Alignment::Center),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(Line::from(text)).style(style), inner);
 }
