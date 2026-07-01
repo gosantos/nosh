@@ -500,9 +500,10 @@ fn handle_event(app: &mut App) -> io::Result<()> {
             (InputMode::Adding, _, _, _) => match key.code {
                 KeyCode::Enter => {
                     app.add_todo();
+                    app.input_mode = InputMode::Normal;
                 }
                 KeyCode::Esc => {
-                    app.add_todo();
+                    app.input_buffer.clear();
                     app.input_mode = InputMode::Normal;
                 }
                 KeyCode::Backspace => {
