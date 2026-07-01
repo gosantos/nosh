@@ -52,7 +52,7 @@ fn side_items(view: &View, show_archived: bool, notes: &[Note]) -> Vec<SideItem>
     let mut items = vec![
         SideItem::Active(view == &View::Todos && !show_archived),
         SideItem::Archive(view == &View::Todos && show_archived),
-        SideItem::Sep,
+        SideItem::NotesHeader(notes.len()),
     ];
     items.extend(notes.iter().map(|n| SideItem::Note(n.id, n.title.clone())));
     items
@@ -61,7 +61,7 @@ fn side_items(view: &View, show_archived: bool, notes: &[Note]) -> Vec<SideItem>
 pub enum SideItem {
     Active(bool),
     Archive(bool),
-    Sep,
+    NotesHeader(usize),
     Note(u64, String),
 }
 

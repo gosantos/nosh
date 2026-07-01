@@ -97,10 +97,13 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled(cursor, Style::default().fg(Color::Cyan)),
                     Span::styled("📦 Archive", style),
                 ]),
-                SideItem::Sep => Line::from(vec![Span::styled(
-                    "  ─────────────────",
-                    Style::default().fg(Color::DarkGray),
-                )]),
+                SideItem::NotesHeader(count) => {
+                    let label = format!("  Notes ({}) ", count);
+                    Line::from(vec![Span::styled(
+                        label,
+                        Style::default().fg(Color::Cyan).bold(),
+                    )])
+                }
                 SideItem::Note(_, title) => Line::from(vec![
                     Span::styled(cursor, Style::default().fg(Color::Cyan)),
                     Span::styled(format!("📝 {}", title), style),
