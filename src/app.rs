@@ -10,6 +10,11 @@ pub enum InputMode {
     Searching,
 }
 
+pub enum NoteMode {
+    Viewing,
+    Editing,
+}
+
 #[derive(PartialEq, Eq)]
 pub enum Panel {
     Main,
@@ -33,7 +38,11 @@ pub struct App {
     pub search_query: String,
     pub panel: Panel,
     pub view: View,
+    pub note_mode: NoteMode,
     pub note_scroll: usize,
+    pub note_cursor_line: usize,
+    pub note_cursor_col: usize,
+    pub note_lines: Vec<String>,
     pub side_index: usize,
     storage_path: PathBuf,
     notes_path: PathBuf,
@@ -73,7 +82,11 @@ impl App {
             search_query: String::new(),
             panel: Panel::Main,
             view: View::Todos,
+            note_mode: NoteMode::Viewing,
             note_scroll: 0,
+            note_cursor_line: 0,
+            note_cursor_col: 0,
+            note_lines: Vec::new(),
             side_index: 0,
             storage_path,
             notes_path,
@@ -96,11 +109,147 @@ impl App {
         }
     }
 
-    pub fn current_note_mut(&mut self) -> Option<&mut Note> {
-        let items = side_items(&self.view, self.show_archived, &self.notes);
-        match items.get(self.side_index) {
-            Some(SideItem::Note(id, _)) => self.notes.iter_mut().find(|n| n.id == *id),
-            _ => None,
+    pub fn save_current_note(&mut self) {
+        let content = self.note_lines.join("\n");
+        let title = extract_title(&content);
+        let note_id = {
+            let items = side_items(&self.view, self.show_archived, &self.notes);
+            match items.get(self.side_index) {
+                Some(SideItem::Note(id, _)) => *id,
+                _ => return,
+            }
+        };
+        if let Some(note) = self.notes.iter_mut().find(|n| n.id == note_id) {
+            note.content = content;
+            note.title = title;
+            note.updated_at = Local::now().naive_local();
+            storage::save_notes(&self.notes_path, &self.notes);
+        }
+    }
+
+    pub fn start_edit_note(&mut self) {
+        if let Some(note) = self.current_note() {
+            self.note_lines = note
+                .content
+                .lines()
+                .map(|l| l.to_string())
+                .collect();
+            if self.note_lines.is_empty() {
+                self.note_lines.push(String::new());
+            }
+        } else {
+            self.note_lines = vec![String::new()];
+        }
+        self.note_cursor_line = 0;
+        self.note_cursor_col = 0;
+        self.note_scroll = 0;
+        self.note_mode = NoteMode::Editing;
+    }
+
+    pub fn note_cursor_insert(&mut self, c: char) {
+        if self.note_lines.is_empty() {
+            self.note_lines.push(String::new());
+        }
+        let line = &mut self.note_lines[self.note_cursor_line];
+        if self.note_cursor_col <= line.len() {
+            line.insert(self.note_cursor_col, c);
+        } else {
+            line.push(c);
+        }
+        self.note_cursor_col += 1;
+    }
+
+    pub fn note_cursor_backspace(&mut self) {
+        if self.note_cursor_col > 0 {
+            let line = &mut self.note_lines[self.note_cursor_line];
+            line.remove(self.note_cursor_col - 1);
+            self.note_cursor_col -= 1;
+        } else if self.note_cursor_line > 0 {
+            let below = self.note_lines.remove(self.note_cursor_line);
+            self.note_cursor_line -= 1;
+            self.note_cursor_col = self.note_lines[self.note_cursor_line].len();
+            self.note_lines[self.note_cursor_line].push_str(&below);
+        }
+    }
+
+    pub fn note_cursor_delete(&mut self) {
+        let line = &mut self.note_lines[self.note_cursor_line];
+        if self.note_cursor_col < line.len() {
+            line.remove(self.note_cursor_col);
+        } else if self.note_cursor_line + 1 < self.note_lines.len() {
+            let next = self.note_lines.remove(self.note_cursor_line + 1);
+            self.note_lines[self.note_cursor_line].push_str(&next);
+        }
+    }
+
+    pub fn note_cursor_enter(&mut self) {
+        if self.note_lines.is_empty() {
+            self.note_lines.push(String::new());
+        }
+        let line = &mut self.note_lines[self.note_cursor_line];
+        let rest = if self.note_cursor_col <= line.len() {
+            line.split_off(self.note_cursor_col)
+        } else {
+            String::new()
+        };
+        self.note_cursor_line += 1;
+        self.note_lines.insert(self.note_cursor_line, rest);
+        self.note_cursor_col = 0;
+    }
+
+    pub fn note_cursor_up(&mut self) {
+        if self.note_cursor_line > 0 {
+            self.note_cursor_line -= 1;
+            self.note_cursor_col = self.note_cursor_col.min(
+                self.note_lines[self.note_cursor_line].len(),
+            );
+            if self.note_cursor_line < self.note_scroll {
+                self.note_scroll = self.note_cursor_line;
+            }
+        }
+    }
+
+    pub fn note_cursor_down(&mut self) {
+        if self.note_cursor_line + 1 < self.note_lines.len() {
+            self.note_cursor_line += 1;
+            self.note_cursor_col = self.note_cursor_col.min(
+                self.note_lines[self.note_cursor_line].len(),
+            );
+            let max_scroll = self.note_lines.len().saturating_sub(1);
+            if self.note_cursor_line >= self.note_scroll + max_scroll.min(20) {
+                self.note_scroll = self.note_cursor_line.saturating_sub(19);
+            }
+        }
+    }
+
+    pub fn note_cursor_left(&mut self) {
+        if self.note_cursor_col > 0 {
+            self.note_cursor_col -= 1;
+        } else if self.note_cursor_line > 0 {
+            self.note_cursor_line -= 1;
+            self.note_cursor_col = self.note_lines[self.note_cursor_line].len();
+        }
+    }
+
+    pub fn note_cursor_right(&mut self) {
+        if self.note_cursor_line < self.note_lines.len() {
+            let line_len = self.note_lines[self.note_cursor_line].len();
+            if self.note_cursor_col < line_len {
+                self.note_cursor_col += 1;
+            } else if self.note_cursor_line + 1 < self.note_lines.len() {
+                self.note_cursor_line += 1;
+                self.note_cursor_col = 0;
+            }
+        }
+    }
+
+    pub fn note_cursor_home(&mut self) {
+        self.note_cursor_col = 0;
+    }
+
+    pub fn note_cursor_end(&mut self) {
+        if self.note_cursor_line < self.note_lines.len() {
+            self.note_cursor_col = self.note_lines[self.note_cursor_line].len();
         }
     }
 
@@ -237,32 +386,31 @@ impl App {
             Some(SideItem::Note(..)) => {
                 self.view = View::Note;
                 self.panel = Panel::Main;
+                self.note_mode = NoteMode::Viewing;
                 self.note_scroll = 0;
             }
             _ => {}
         }
     }
 
-    pub fn add_note(&mut self, title: String) {
+    pub fn new_note_inline(&mut self) {
         let now = Local::now().naive_local();
         self.notes.push(Note {
             id: storage::next_id(),
-            title,
+            title: String::new(),
             content: String::new(),
             created_at: now,
             updated_at: now,
         });
         self.notes.sort_by_key(|n| n.id);
         self.side_index = 2 + self.notes.len().saturating_sub(1);
-        storage::save_notes(&self.notes_path, &self.notes);
-    }
-
-    pub fn update_note_content(&mut self, content: String) {
-        if let Some(note) = self.current_note_mut() {
-            note.content = content;
-            note.updated_at = Local::now().naive_local();
-            storage::save_notes(&self.notes_path, &self.notes);
-        }
+        self.view = View::Note;
+        self.panel = Panel::Main;
+        self.note_lines = vec![String::new()];
+        self.note_cursor_line = 0;
+        self.note_cursor_col = 0;
+        self.note_scroll = 0;
+        self.note_mode = NoteMode::Editing;
     }
 
     pub fn delete_note_by_side_index(&mut self) {
@@ -283,13 +431,26 @@ impl App {
         storage::save_notes(&self.notes_path, &self.notes);
     }
 
-    pub fn scroll_note_up(&mut self) {
+    pub fn note_scroll_up(&mut self) {
         if self.note_scroll > 0 {
             self.note_scroll -= 1;
         }
     }
 
-    pub fn scroll_note_down(&mut self) {
+    pub fn note_scroll_down(&mut self) {
         self.note_scroll += 1;
     }
+}
+
+fn extract_title(content: &str) -> String {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("# ") {
+            return trimmed[2..].trim().to_string();
+        }
+        if !trimmed.is_empty() {
+            return trimmed.chars().take(60).collect();
+        }
+    }
+    "Untitled".to_string()
 }

@@ -4,11 +4,10 @@ mod storage;
 mod ui;
 
 use std::io;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use app::{App, InputMode, Panel, View};
+use app::{App, InputMode, NoteMode, Panel, View};
 use chrono::Local;
 use clap::Parser;
 use crossterm::{
@@ -30,7 +29,6 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// List all todos
     #[command(visible_alias = "ls")]
     List {
         #[arg(short, long)]
@@ -43,14 +41,9 @@ enum Command {
         archived: bool,
     },
     #[command(visible_alias = "a")]
-    Add {
-        description: String,
-    },
+    Add { description: String },
     #[command(visible_alias = "e")]
-    Edit {
-        id: u64,
-        description: String,
-    },
+    Edit { id: u64, description: String },
     #[command(visible_alias = "do")]
     Done { id: u64 },
     #[command(visible_alias = "un")]
@@ -66,26 +59,20 @@ enum Command {
         #[arg(short, long)]
         archived: bool,
     },
-    /// Manage notes
     #[command(subcommand)]
     Note(NoteCommand),
 }
 
 #[derive(clap::Subcommand)]
 enum NoteCommand {
-    /// List all notes
     #[command(visible_alias = "ls")]
     List,
-    /// Create a new note (opens $EDITOR)
     #[command(visible_alias = "a")]
     New { title: String },
-    /// Edit note content in $EDITOR
     #[command(visible_alias = "e")]
     Edit { id: u64 },
-    /// Show note content
     #[command(alias = "show")]
     View { id: u64 },
-    /// Delete a note
     #[command(visible_alias = "rm")]
     Delete { id: u64 },
 }
@@ -109,6 +96,19 @@ fn open_editor(content: &str) -> io::Result<String> {
         return Err(io::Error::new(io::ErrorKind::Other, "editor exited with error"));
     }
     Ok(new_content)
+}
+
+fn extract_title(content: &str) -> String {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("# ") {
+            return trimmed[2..].trim().to_string();
+        }
+        if !trimmed.is_empty() {
+            return trimmed.chars().take(60).collect();
+        }
+    }
+    "Untitled".to_string()
 }
 
 fn main() -> io::Result<()> {
@@ -143,9 +143,7 @@ fn list_todos(done: bool, pending: bool, ids: bool, archived: bool) {
     let show_pending = pending || (!done && !pending);
     let filtered: Vec<_> = todos
         .iter()
-        .filter(|t| {
-            t.archived == archived && ((show_done && t.done) || (show_pending && !t.done))
-        })
+        .filter(|t| t.archived == archived && ((show_done && t.done) || (show_pending && !t.done)))
         .collect();
     if filtered.is_empty() {
         println!("No todos found.");
@@ -154,13 +152,7 @@ fn list_todos(done: bool, pending: bool, ids: bool, archived: bool) {
     for t in filtered {
         let status = if t.done { "[x]" } else { "[ ]" };
         if ids {
-            println!(
-                "{}  {:>16}  {}  {}",
-                status,
-                t.id,
-                t.created_at.format("%m-%d %H:%M"),
-                t.description
-            );
+            println!("{}  {:>16}  {}  {}", status, t.id, t.created_at.format("%m-%d %H:%M"), t.description);
         } else {
             println!("{}  {}  {}", status, t.created_at.format("%m-%d %H:%M"), t.description);
         }
@@ -339,6 +331,7 @@ fn run_note_cmd(cmd: NoteCommand) {
                         }
                     };
                     note.content = new_content;
+                    note.title = extract_title(&note.content);
                     note.updated_at = Local::now().naive_local();
                     storage::save_notes(&path, &notes);
                     println!("Updated note #{}", id);
@@ -390,7 +383,7 @@ fn run_tui() -> io::Result<()> {
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
-            handle_event(&mut app, &mut terminal)?;
+            handle_event(&mut app)?;
         }
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
@@ -402,47 +395,46 @@ fn run_tui() -> io::Result<()> {
     Ok(())
 }
 
-fn handle_event(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+fn handle_event(app: &mut App) -> io::Result<()> {
     if let Event::Key(key) = event::read()? {
         if key.kind != KeyEventKind::Press {
             return Ok(());
         }
 
-        match (&app.input_mode, &app.panel, &app.view) {
-            (InputMode::Normal, Panel::Main, View::Note) => match key.code {
-                KeyCode::Char('q') => app.should_quit = true,
-                KeyCode::Char('e') => {
-                    let content = app.current_note().map(|n| n.content.clone()).unwrap_or_default();
-                    terminal.clear()?;
-                    disable_raw_mode()?;
-                    terminal.backend_mut().execute(LeaveAlternateScreen)?;
-                    let _ = io::stdout().flush();
-
-                    match open_editor(&content) {
-                        Ok(new_content) => app.update_note_content(new_content),
-                        Err(e) => {
-                            let _ = write!(io::stdout(), "Editor error: {}\r\nPress Enter to continue...", e);
-                            let _ = io::stdout().flush();
-                            let _ = io::stdin().read_line(&mut String::new());
-                        }
-                    }
-
-                    enable_raw_mode()?;
-                    terminal.backend_mut().execute(EnterAlternateScreen)?;
-                    terminal.clear()?;
+        match (&app.input_mode, &app.note_mode, &app.panel, &app.view) {
+            (InputMode::Normal, NoteMode::Editing, Panel::Main, View::Note) => match key.code {
+                KeyCode::Esc => {
+                    app.save_current_note();
+                    app.note_mode = NoteMode::Viewing;
                 }
-                KeyCode::Down | KeyCode::Char('j') => app.scroll_note_down(),
-                KeyCode::Up | KeyCode::Char('k') => app.scroll_note_up(),
-                KeyCode::Tab => app.panel = Panel::Sidebar,
-                KeyCode::Char('/') => {
-                    app.input_mode = InputMode::Searching;
-                    app.input_buffer.clear();
-                    app.search_query.clear();
+                KeyCode::Char(c) => app.note_cursor_insert(c),
+                KeyCode::Backspace => app.note_cursor_backspace(),
+                KeyCode::Delete => app.note_cursor_delete(),
+                KeyCode::Enter => app.note_cursor_enter(),
+                KeyCode::Up => app.note_cursor_up(),
+                KeyCode::Down => app.note_cursor_down(),
+                KeyCode::Left => app.note_cursor_left(),
+                KeyCode::Right => app.note_cursor_right(),
+                KeyCode::Home => app.note_cursor_home(),
+                KeyCode::End => app.note_cursor_end(),
+                KeyCode::Tab => {
+                    app.save_current_note();
+                    app.note_mode = NoteMode::Viewing;
+                    app.panel = Panel::Sidebar;
                 }
                 _ => {}
             },
 
-            (InputMode::Normal, Panel::Main, View::Todos) => match key.code {
+            (InputMode::Normal, NoteMode::Viewing, Panel::Main, View::Note) => match key.code {
+                KeyCode::Char('q') => app.should_quit = true,
+                KeyCode::Char('i') | KeyCode::Char('e') => app.start_edit_note(),
+                KeyCode::Down | KeyCode::Char('j') => app.note_scroll_down(),
+                KeyCode::Up | KeyCode::Char('k') => app.note_scroll_up(),
+                KeyCode::Tab => app.panel = Panel::Sidebar,
+                _ => {}
+            },
+
+            (InputMode::Normal, _, Panel::Main, View::Todos) => match key.code {
                 KeyCode::Char('q') => app.should_quit = true,
                 KeyCode::Char('n') => {
                     app.input_mode = InputMode::Adding;
@@ -469,50 +461,18 @@ fn handle_event(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::Stdo
                 _ => {}
             },
 
-            (InputMode::Normal, Panel::Sidebar, _) => match key.code {
+            (InputMode::Normal, _, Panel::Sidebar, _) => match key.code {
                 KeyCode::Char('q') => app.should_quit = true,
                 KeyCode::Up | KeyCode::Char('k') => app.side_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.side_down(),
                 KeyCode::Enter => app.select_sidebar(),
-                KeyCode::Char('n') => {
-                    terminal.clear()?;
-                    disable_raw_mode()?;
-                    terminal.backend_mut().execute(LeaveAlternateScreen)?;
-                    let _ = io::stdout().flush();
-
-                    print!("Note title: ");
-                    let _ = io::stdout().flush();
-                    let mut title = String::new();
-                    io::stdin().read_line(&mut title)?;
-                    let title = title.trim().to_string();
-
-                    if title.is_empty() {
-                        enable_raw_mode()?;
-                        terminal.backend_mut().execute(EnterAlternateScreen)?;
-                        terminal.clear()?;
-                    } else {
-                        let content = match open_editor("") {
-                            Ok(c) => c,
-                            Err(e) => {
-                                let _ = write!(io::stdout(), "Editor error: {}\r\nPress Enter...", e);
-                                let _ = io::stdout().flush();
-                                let _ = io::stdin().read_line(&mut String::new());
-                                String::new()
-                            }
-                        };
-                        app.add_note(title);
-                        app.update_note_content(content);
-                        enable_raw_mode()?;
-                        terminal.backend_mut().execute(EnterAlternateScreen)?;
-                        terminal.clear()?;
-                    }
-                }
+                KeyCode::Char('n') => app.new_note_inline(),
                 KeyCode::Char('d') => app.delete_note_by_side_index(),
                 KeyCode::Tab | KeyCode::Esc => app.panel = Panel::Main,
                 _ => {}
             },
 
-            (InputMode::Adding, _, _) => match key.code {
+            (InputMode::Adding, _, _, _) => match key.code {
                 KeyCode::Enter => {
                     app.add_todo();
                     app.input_mode = InputMode::Normal;
@@ -530,7 +490,7 @@ fn handle_event(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::Stdo
                 _ => {}
             },
 
-            (InputMode::Editing, _, _) => match key.code {
+            (InputMode::Editing, _, _, _) => match key.code {
                 KeyCode::Enter => {
                     app.edit_todo();
                     app.input_mode = InputMode::Normal;
@@ -548,7 +508,7 @@ fn handle_event(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::Stdo
                 _ => {}
             },
 
-            (InputMode::Searching, _, _) => match key.code {
+            (InputMode::Searching, _, _, _) => match key.code {
                 KeyCode::Enter | KeyCode::Esc => {
                     app.input_buffer.clear();
                     app.search_query.clear();

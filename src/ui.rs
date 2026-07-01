@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, Panel, SideItem, View};
+use crate::app::{App, InputMode, NoteMode, Panel, SideItem, View};
 use crate::markdown;
 use crate::storage::Todo;
 
@@ -24,18 +24,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     render_title(frame, title_area, app);
     render_sidebar(frame, side_area, app);
-    match app.view {
-        View::Todos => render_list(frame, main_area, app),
-        View::Note => render_note(frame, main_area, app),
+    match (&app.view, &app.note_mode) {
+        (View::Note, NoteMode::Editing) => render_note_editor(frame, main_area, app),
+        (View::Note, NoteMode::Viewing) => render_note_view(frame, main_area, app),
+        _ => render_list(frame, main_area, app),
     }
     render_footer(frame, footer_area, app);
 }
 
 fn render_title(frame: &mut Frame, area: Rect, app: &App) {
-    let label = match app.view {
-        View::Todos if app.show_archived => "Archived",
-        View::Todos => "Active",
-        View::Note => "Note",
+    let label = match (&app.view, &app.note_mode) {
+        (View::Note, NoteMode::Editing) => "Editing",
+        (View::Note, _) => "Note",
+        (View::Todos, _) if app.show_archived => "Archived",
+        _ => "Active",
     };
     let total = app.todos.iter().filter(|t| t.archived == app.show_archived).count();
     let done = app
@@ -253,7 +255,7 @@ fn render_list_empty(frame: &mut Frame, area: Rect, border_color: Color, app: &A
     frame.render_widget(paragraph, content_area);
 }
 
-fn render_note(frame: &mut Frame, area: Rect, app: &App) {
+fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
     let border_color = if app.panel == Panel::Main {
         Color::Yellow
     } else {
@@ -272,9 +274,10 @@ fn render_note(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
+    let title = if note.title.is_empty() { "Note" } else { &note.title };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", note.title))
+        .title(format!(" {} ", title))
         .border_style(Style::default().fg(border_color));
     frame.render_widget(block.clone(), area);
 
@@ -294,11 +297,7 @@ fn render_note(frame: &mut Frame, area: Rect, app: &App) {
         vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                "Empty note",
-                Style::default().fg(Color::DarkGray),
-            )]),
-            Line::from(vec![Span::styled(
-                "Press 'e' to edit in $EDITOR",
+                "Press 'i' to start editing",
                 Style::default().fg(Color::DarkGray),
             )]),
         ]
@@ -327,15 +326,108 @@ fn render_note(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
+    let border_color = Color::Yellow;
+
+    let title = app.current_note().map(|n| n.title.clone()).unwrap_or_default();
+    let display_title = if title.is_empty() { "Editing" } else { &title };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", display_title))
+        .border_style(Style::default().fg(border_color));
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+    let visible_height = inner.height as usize;
+    let max_scroll = app.note_lines.len().saturating_sub(visible_height);
+    let scroll = app.note_scroll.min(max_scroll);
+
+    let visible: Vec<Line> = app
+        .note_lines
+        .iter()
+        .skip(scroll)
+        .take(visible_height)
+        .enumerate()
+        .map(|(i, line)| {
+            let abs_line = i + scroll;
+            let is_cursor_line = abs_line == app.note_cursor_line;
+            let numbered = format!("{:>3} │ ", abs_line + 1);
+
+            if is_cursor_line {
+                let before = &line[..app.note_cursor_col.min(line.len())];
+                let at = line
+                    .chars()
+                    .nth(app.note_cursor_col)
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| " ".to_string());
+                let after = if app.note_cursor_col < line.len() {
+                    &line[(app.note_cursor_col + 1).min(line.len())..]
+                } else {
+                    ""
+                };
+                Line::from(vec![
+                    Span::styled(numbered, Style::default().fg(Color::DarkGray)),
+                    Span::raw(before),
+                    Span::styled(at, Style::default().bg(Color::Rgb(80, 80, 80)).fg(Color::White)),
+                    Span::raw(after),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled(numbered, Style::default().fg(Color::DarkGray)),
+                    Span::raw(line.clone()),
+                ])
+            }
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(visible);
+    frame.render_widget(paragraph, inner);
+
+    let status_line = format!(
+        " INSERT  Ln {}, Col {}  [Esc to save] ",
+        app.note_cursor_line + 1,
+        app.note_cursor_col + 1
+    );
+    let status_rect = Rect {
+        y: inner.y + inner.height.saturating_sub(1),
+        height: 1,
+        ..inner
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            status_line,
+            Style::default().bg(Color::Rgb(60, 60, 60)).fg(Color::White),
+        )])),
+        status_rect,
+    );
+}
+
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let (text, style) = match app.input_mode {
-        InputMode::Normal => {
+    let (text, style) = match (&app.input_mode, &app.note_mode) {
+        (InputMode::Normal, NoteMode::Editing) => (
+            vec![
+                Span::styled("  Esc ", Style::default().fg(Color::Red).bold()),
+                Span::raw("save  "),
+                Span::styled("\u{2191}/\u{2193} ", Style::default().fg(Color::Cyan).bold()),
+                Span::raw("move  "),
+                Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
+                Span::raw("newline  "),
+                Span::styled("Backspace ", Style::default().fg(Color::Red).bold()),
+                Span::raw("delete"),
+            ],
+            Style::default(),
+        ),
+        (InputMode::Normal, _) => {
             let focused = match app.panel {
                 Panel::Main => Span::styled(
-                    format!("  focused: {} ", match app.view {
-                        View::Todos => "todos",
-                        View::Note => "note",
-                    }),
+                    format!(
+                        "  focused: {} ",
+                        match app.view {
+                            View::Todos => "todos",
+                            View::Note => "note",
+                        }
+                    ),
                     Style::default().fg(Color::Yellow),
                 ),
                 Panel::Sidebar => Span::styled(
@@ -361,6 +453,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                     Span::raw("search  "),
                     Span::styled("\u{2191}/\u{2193} ", Style::default().fg(Color::Cyan).bold()),
                     Span::raw("nav  "),
+                    Span::styled("i ", Style::default().fg(Color::Green).bold()),
+                    Span::raw("insert  "),
                     Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
                     Span::raw("panel"),
                     focused,
@@ -368,7 +462,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default(),
             )
         }
-        InputMode::Adding | InputMode::Editing | InputMode::Searching => {
+        _ => {
             let label = match app.input_mode {
                 InputMode::Editing => " EDIT: ",
                 InputMode::Searching => " FIND: ",
