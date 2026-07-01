@@ -471,10 +471,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             let label = match app.input_mode {
                 InputMode::Editing => " EDIT: ",
                 InputMode::Searching => " FIND: ",
-                _ => " ADD: ",
+                _ => " CREATE: ",
             };
             let hint = match app.input_mode {
-                InputMode::Adding => "Enter add  Esc save+quit",
+                InputMode::Adding => "Enter create  Esc save+quit",
                 InputMode::Editing => "Enter/Esc save",
                 _ => "Enter save  Esc cancel",
             };
