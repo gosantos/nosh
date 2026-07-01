@@ -268,6 +268,7 @@ fn archive_todo(id: u64) {
     match todos.iter_mut().find(|t| t.id == id) {
         Some(todo) => {
             todo.archived = true;
+            todo.done = true;
             storage::save(&path, &todos);
             println!("Archived todo #{}", id);
         }

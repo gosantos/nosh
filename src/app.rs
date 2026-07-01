@@ -334,6 +334,9 @@ impl App {
     pub fn archive_selected(&mut self) {
         if let Some(idx) = self.selected_todo_index() {
             self.todos[idx].archived = !self.todos[idx].archived;
+            if self.todos[idx].archived {
+                self.todos[idx].done = true;
+            }
             storage::save(&self.storage_path, &self.todos);
             self.clamp_selection();
         }
