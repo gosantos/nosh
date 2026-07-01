@@ -197,6 +197,7 @@ fn add_todo(description: &str) {
         done: false,
         archived: false,
         created_at: Local::now().naive_local(),
+        completed_at: None,
     });
     storage::save(&path, &todos);
     println!("Added todo");
@@ -224,6 +225,7 @@ fn mark_done(id: u64) {
     match todos.iter_mut().find(|t| t.id == id) {
         Some(todo) => {
             todo.done = true;
+            todo.completed_at = Some(Local::now().naive_local());
             storage::save(&path, &todos);
             println!("Marked todo #{} as done", id);
         }
@@ -240,6 +242,7 @@ fn mark_undone(id: u64) {
     match todos.iter_mut().find(|t| t.id == id) {
         Some(todo) => {
             todo.done = false;
+            todo.completed_at = None;
             storage::save(&path, &todos);
             println!("Marked todo #{} as not done", id);
         }
@@ -270,6 +273,7 @@ fn archive_todo(id: u64) {
         Some(todo) => {
             todo.archived = true;
             todo.done = true;
+            todo.completed_at = Some(Local::now().naive_local());
             storage::save(&path, &todos);
             println!("Archived todo #{}", id);
         }
@@ -404,21 +408,18 @@ fn run_tui() -> io::Result<()> {
     }
 
     loop {
-        let should_quit = {
-            let mut app = app.lock().unwrap();
-            terminal.draw(|f| ui::draw(f, &mut app))?;
+        let mut app = app.lock().unwrap();
+        terminal.draw(|f| ui::draw(f, &mut app))?;
 
-            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-            if event::poll(timeout)? {
-                handle_event(&mut app)?;
-            }
-            if last_tick.elapsed() >= tick_rate {
-                last_tick = Instant::now();
-            }
-            app.should_quit
-        };
+        let timeout = tick_rate.saturating_sub(last_tick.elapsed()).max(Duration::from_millis(1));
+        if event::poll(timeout)? {
+            handle_event(&mut app)?;
+        }
+        if last_tick.elapsed() >= tick_rate {
+            last_tick = Instant::now();
+        }
 
-        if should_quit {
+        if app.should_quit {
             break;
         }
     }

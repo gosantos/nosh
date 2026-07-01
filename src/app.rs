@@ -306,6 +306,7 @@ impl App {
             done: false,
             archived: false,
             created_at: Local::now().naive_local(),
+            completed_at: None,
         });
         self.input_buffer.clear();
         self.selected_index = self.visible_count().saturating_sub(1);
@@ -326,16 +327,27 @@ impl App {
 
     pub fn toggle_done(&mut self) {
         if let Some(idx) = self.selected_todo_index() {
-            self.todos[idx].done = !self.todos[idx].done;
+            let todo = &mut self.todos[idx];
+            todo.done = !todo.done;
+            todo.completed_at = if todo.done {
+                Some(Local::now().naive_local())
+            } else {
+                None
+            };
             storage::save(&self.storage_path, &self.todos);
         }
     }
 
     pub fn archive_selected(&mut self) {
         if let Some(idx) = self.selected_todo_index() {
-            self.todos[idx].archived = !self.todos[idx].archived;
-            if self.todos[idx].archived {
-                self.todos[idx].done = true;
+            let todo = &mut self.todos[idx];
+            todo.archived = !todo.archived;
+            if todo.archived {
+                todo.done = true;
+                todo.completed_at = Some(Local::now().naive_local());
+            } else {
+                todo.done = false;
+                todo.completed_at = None;
             }
             storage::save(&self.storage_path, &self.todos);
             self.clamp_selection();
@@ -357,6 +369,7 @@ impl App {
             if !todo.archived && todo.created_at < threshold {
                 todo.archived = true;
                 todo.done = true;
+                todo.completed_at = Some(Local::now().naive_local());
                 changed = true;
             }
         }
@@ -365,10 +378,38 @@ impl App {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn toggle_archived_view(&mut self) {
-        self.show_archived = !self.show_archived;
-        self.selected_index = 0;
+    pub fn grouped_todos(&self) -> Vec<(String, Vec<usize>)> {
+        use chrono::NaiveDate;
+        let today = Local::now().naive_local().date();
+        let mut groups: std::collections::BTreeMap<NaiveDate, Vec<usize>> =
+            std::collections::BTreeMap::new();
+
+        for (i, todo) in self.todos.iter().enumerate() {
+            if todo.archived != self.show_archived {
+                continue;
+            }
+            let date = if self.show_archived {
+                todo.completed_at.unwrap_or(todo.created_at).date()
+            } else {
+                todo.created_at.date()
+            };
+            groups.entry(date).or_default().push(i);
+        }
+
+        groups
+            .into_iter()
+            .rev()
+            .map(|(date, todos)| {
+                let header = if date == today {
+                    "Today".to_string()
+                } else if date == today - chrono::Duration::days(1) {
+                    "Yesterday".to_string()
+                } else {
+                    date.format("%A, %b %d").to_string()
+                };
+                (header, todos)
+            })
+            .collect()
     }
 
     pub fn move_up(&mut self) {
@@ -542,6 +583,7 @@ impl App {
                         done: false,
                         archived: false,
                         created_at: Local::now().naive_local(),
+                        completed_at: None,
                     });
                     self.todos.sort_by_key(|t| t.id);
                     storage::save(&self.storage_path, &self.todos);

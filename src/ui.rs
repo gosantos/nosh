@@ -9,6 +9,11 @@ use ratatui::{
 use crate::app::{App, InputMode, NoteMode, Panel, SideItem, View};
 use crate::markdown;
 
+enum DisplayItem {
+    Header(String),
+    Todo(usize),
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
@@ -164,60 +169,96 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let sel = app.selected_index.min(visible.len().saturating_sub(1));
 
+    let groups = app.grouped_todos();
+    let display_items: Vec<DisplayItem> = {
+        let mut items = Vec::new();
+        for (header, indices) in &groups {
+            items.push(DisplayItem::Header(header.clone()));
+            for &idx in indices {
+                items.push(DisplayItem::Todo(idx));
+            }
+        }
+        items
+    };
+
+    let selected_display_pos = find_selected_display_pos(&display_items, sel).unwrap_or(0);
+    let total_display = display_items.len();
+
     let list_height = area.height.saturating_sub(2) as usize;
-    let max_scroll = visible.len().saturating_sub(list_height);
-    if sel < app.list_scroll {
-        app.list_scroll = sel;
-    } else if sel >= app.list_scroll + list_height {
-        app.list_scroll = sel.saturating_sub(list_height).saturating_add(1);
+    let max_scroll = total_display.saturating_sub(list_height);
+    if selected_display_pos < app.list_scroll {
+        app.list_scroll = selected_display_pos;
+    } else if selected_display_pos >= app.list_scroll + list_height {
+        app.list_scroll = selected_display_pos.saturating_sub(list_height).saturating_add(1);
     }
     app.list_scroll = app.list_scroll.min(max_scroll);
 
-    let items: Vec<ListItem> = visible
+    let items: Vec<ListItem> = display_items
         .iter()
         .enumerate()
         .skip(app.list_scroll)
-        .map(|(i, todo_idx)| {
-            let todo = &app.todos[*todo_idx];
-            let is_selected = app.panel == Panel::Main && i == sel;
-            let checkbox = if todo.done { "✓" } else { "○" };
-            let check_color = if todo.done {
-                Color::Green
-            } else {
-                Color::Yellow
-            };
-            let prefix = if is_selected { "▸" } else { " " };
-            let date = todo.created_at.format("%m-%d %H:%M").to_string();
+        .map(|(display_pos, item)| match item {
+            DisplayItem::Header(label) => {
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!("  {} ", '\u{2502}'),
+                        Style::default().fg(Color::Rgb(60, 60, 60)),
+                    ),
+                    Span::styled(
+                        label,
+                        Style::default().fg(Color::Rgb(120, 120, 120)).bold(),
+                    ),
+                ]);
+                ListItem::new(line).style(Style::default())
+            }
+            DisplayItem::Todo(todo_idx) => {
+                let todo = &app.todos[*todo_idx];
+                let is_selected =
+                    app.panel == Panel::Main && display_pos == selected_display_pos;
+                let checkbox = if todo.done { "✓" } else { "○" };
+                let check_color = if todo.done {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                };
+                let prefix = if is_selected { "▸" } else { " " };
+                let date = todo
+                    .completed_at
+                    .unwrap_or(todo.created_at)
+                    .format("%m-%d %H:%M")
+                    .to_string();
 
-            let mut spans = vec![
-                Span::styled(
-                    format!("{} ", prefix),
-                    Style::default().fg(Color::Cyan).bold(),
-                ),
-                Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
-            ];
+                let mut spans = vec![
+                    Span::styled(
+                        format!("{} ", prefix),
+                        Style::default().fg(Color::Cyan).bold(),
+                    ),
+                    Span::styled(
+                        format!("{} ", checkbox),
+                        Style::default().fg(check_color),
+                    ),
+                ];
 
-            let desc_style = if todo.done {
-                Style::default().fg(Color::DarkGray).crossed_out()
-            } else {
-                Style::default().fg(Color::White)
-            };
-            spans.push(Span::styled(todo.description.clone(), desc_style));
+                let desc_style = if todo.done {
+                    Style::default().fg(Color::DarkGray).crossed_out()
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                spans.push(Span::styled(todo.description.clone(), desc_style));
 
-            spans.push(Span::styled(
-                format!("  {}", date),
-                Style::default().fg(Color::DarkGray),
-            ));
+                spans.push(Span::styled(
+                    format!("  {}", date),
+                    Style::default().fg(Color::DarkGray),
+                ));
 
-            let line = Line::from(spans);
-
-            let item_style = if is_selected {
-                Style::default().bg(Color::Rgb(35, 40, 48))
-            } else {
-                Style::default()
-            };
-
-            ListItem::new(line).style(item_style)
+                let line = Line::from(spans);
+                let item_style = if is_selected {
+                    Style::default().bg(Color::Rgb(35, 40, 48))
+                } else {
+                    Style::default()
+                };
+                ListItem::new(line).style(item_style)
+            }
         })
         .collect();
 
@@ -235,6 +276,19 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     );
 
     frame.render_widget(list, area);
+}
+
+fn find_selected_display_pos(items: &[DisplayItem], selected: usize) -> Option<usize> {
+    let mut todo_count = 0;
+    for (i, item) in items.iter().enumerate() {
+        if matches!(item, DisplayItem::Todo(_)) {
+            if todo_count == selected {
+                return Some(i);
+            }
+            todo_count += 1;
+        }
+    }
+    None
 }
 
 fn render_list_empty(frame: &mut Frame, area: Rect, border_color: Color, app: &App) {

@@ -12,6 +12,8 @@ pub struct Todo {
     #[serde(default)]
     pub archived: bool,
     pub created_at: NaiveDateTime,
+    #[serde(default)]
+    pub completed_at: Option<NaiveDateTime>,
 }
 
 static SEQUENCE: AtomicU16 = AtomicU16::new(0);
