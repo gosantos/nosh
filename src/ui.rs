@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
@@ -333,8 +333,12 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
 
     let lines = markdown::render(&note.content, inner.width);
     let total_lines = lines.len();
+    let has_overflow = total_lines > max_lines;
+    let visible_count = if has_overflow { max_lines.saturating_sub(1).max(1) } else { max_lines };
+    let max_scroll = total_lines.saturating_sub(visible_count);
+    let scroll = app.note_scroll.min(max_scroll);
 
-    let visible: Vec<&Line> = lines.iter().skip(app.note_scroll).take(max_lines).collect();
+    let visible: Vec<&Line> = lines.iter().skip(scroll).take(visible_count).collect();
 
     let content = if visible.is_empty() {
         vec![
@@ -348,11 +352,15 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
         visible.into_iter().cloned().collect()
     };
 
-    let paragraph = Paragraph::new(content);
+    let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 
-    if total_lines > max_lines {
-        let pct = (app.note_scroll as f64 / (total_lines - max_lines) as f64 * 100.0).min(100.0);
+    if has_overflow {
+        let pct = if max_scroll > 0 {
+            (scroll as f64 / max_scroll as f64 * 100.0).min(100.0)
+        } else {
+            100.0
+        };
         let scroll_info = format!(" {}% ", pct as u32);
         let scroll_line = Line::from(vec![Span::styled(
             scroll_info,
