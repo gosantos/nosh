@@ -40,6 +40,9 @@ enum Command {
         /// Show internal IDs
         #[arg(long)]
         ids: bool,
+        /// Show archived todos
+        #[arg(short, long)]
+        archived: bool,
     },
     /// Add a new todo
     #[command(visible_alias = "a")]
@@ -73,6 +76,26 @@ enum Command {
         /// Todo ID
         id: u64,
     },
+    /// Archive a todo
+    Archive {
+        /// Todo ID
+        id: u64,
+    },
+    /// Unarchive a todo
+    #[command(visible_alias = "ua")]
+    Unarchive {
+        /// Todo ID
+        id: u64,
+    },
+    /// Search todos by keyword
+    #[command(visible_alias = "grep")]
+    Search {
+        /// Search query
+        query: String,
+        /// Show archived todos
+        #[arg(short, long)]
+        archived: bool,
+    },
 }
 
 fn storage_path() -> PathBuf {
@@ -91,14 +114,22 @@ fn main() -> io::Result<()> {
 fn run_cli(cmd: Command) {
     let path = storage_path();
     match cmd {
-        Command::List { done, pending, ids } => {
+        Command::List {
+            done,
+            pending,
+            ids,
+            archived,
+        } => {
             let mut todos = storage::load(&path);
             todos.sort_by_key(|t| t.id);
             let show_done = done || (!done && !pending);
             let show_pending = pending || (!done && !pending);
             let filtered: Vec<_> = todos
                 .iter()
-                .filter(|t| (show_done && t.done) || (show_pending && !t.done))
+                .filter(|t| {
+                    t.archived == archived
+                        && ((show_done && t.done) || (show_pending && !t.done))
+                })
                 .collect();
             if filtered.is_empty() {
                 println!("No todos found.");
@@ -107,9 +138,20 @@ fn run_cli(cmd: Command) {
             for t in filtered {
                 let status = if t.done { "[x]" } else { "[ ]" };
                 if ids {
-                    println!("{}  {:>16}  {}  {}", status, t.id, t.created_at.format("%m-%d %H:%M"), t.description);
+                    println!(
+                        "{}  {:>16}  {}  {}",
+                        status,
+                        t.id,
+                        t.created_at.format("%m-%d %H:%M"),
+                        t.description
+                    );
                 } else {
-                    println!("{}  {}  {}", status, t.created_at.format("%m-%d %H:%M"), t.description);
+                    println!(
+                        "{}  {}  {}",
+                        status,
+                        t.created_at.format("%m-%d %H:%M"),
+                        t.description
+                    );
                 }
             }
         }
@@ -119,6 +161,7 @@ fn run_cli(cmd: Command) {
                 id: storage::next_id(),
                 description,
                 done: false,
+                archived: false,
                 created_at: Local::now().naive_local(),
             });
             storage::save(&path, &todos);
@@ -177,6 +220,59 @@ fn run_cli(cmd: Command) {
             storage::save(&path, &todos);
             println!("Deleted todo #{}", id);
         }
+        Command::Archive { id } => {
+            let mut todos = storage::load(&path);
+            match todos.iter_mut().find(|t| t.id == id) {
+                Some(todo) => {
+                    todo.archived = true;
+                    storage::save(&path, &todos);
+                    println!("Archived todo #{}", id);
+                }
+                None => {
+                    eprintln!("Todo #{} not found", id);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Unarchive { id } => {
+            let mut todos = storage::load(&path);
+            match todos.iter_mut().find(|t| t.id == id) {
+                Some(todo) => {
+                    todo.archived = false;
+                    storage::save(&path, &todos);
+                    println!("Unarchived todo #{}", id);
+                }
+                None => {
+                    eprintln!("Todo #{} not found", id);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Search { query, archived } => {
+            let todos = storage::load(&path);
+            let q = query.to_lowercase();
+            let mut results: Vec<_> = todos
+                .iter()
+                .filter(|t| {
+                    t.archived == archived
+                        && t.description.to_lowercase().contains(&q)
+                })
+                .collect();
+            results.sort_by_key(|t| t.id);
+            if results.is_empty() {
+                println!("No matches for '{}'", query);
+                return;
+            }
+            for t in results {
+                let status = if t.done { "[x]" } else { "[ ]" };
+                println!(
+                    "{}  {}  {}",
+                    status,
+                    t.created_at.format("%m-%d %H:%M"),
+                    t.description
+                );
+            }
+        }
     }
 }
 
@@ -223,16 +319,23 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.input_buffer.clear();
                 }
                 KeyCode::Char('e') => {
-                    if let Some(todo) = app.todos.get(app.selected_index) {
+                    if let Some(idx) = app.selected_todo_index() {
                         app.input_mode = InputMode::Editing;
-                        app.input_buffer = todo.description.clone();
+                        app.input_buffer = app.todos[idx].description.clone();
                     }
                 }
+                KeyCode::Char('a') => app.archive_selected(),
                 KeyCode::Char('d') => app.delete_selected(),
                 KeyCode::Char(' ') => app.toggle_done(),
+                KeyCode::Char('/') => {
+                    app.input_mode = InputMode::Searching;
+                    app.input_buffer.clear();
+                    app.search_query.clear();
+                }
+                KeyCode::Esc => app.should_quit = true,
+                KeyCode::Tab => app.toggle_archived_view(),
                 KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                KeyCode::Esc => app.should_quit = true,
                 _ => {}
             },
             InputMode::Adding => match key.code {
@@ -266,6 +369,25 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 }
                 KeyCode::Char(c) => {
                     app.input_buffer.push(c);
+                }
+                _ => {}
+            },
+            InputMode::Searching => match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    app.input_buffer.clear();
+                    app.search_query.clear();
+                    app.input_mode = InputMode::Normal;
+                    app.selected_index = 0;
+                }
+                KeyCode::Backspace => {
+                    app.input_buffer.pop();
+                    app.search_query = app.input_buffer.clone();
+                    app.selected_index = 0;
+                }
+                KeyCode::Char(c) => {
+                    app.input_buffer.push(c);
+                    app.search_query = app.input_buffer.clone();
+                    app.selected_index = 0;
                 }
                 _ => {}
             },

@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, InputMode};
+use crate::storage::Todo;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -23,8 +24,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_title(frame: &mut Frame, area: Rect, app: &App) {
-    let total = app.todos.len();
-    let done = app.todos.iter().filter(|t| t.done).count();
+    let label = if app.show_archived { "Archived" } else { "Active" };
+    let total = app.todos.iter().filter(|t| t.archived == app.show_archived).count();
+    let done = app
+        .todos
+        .iter()
+        .filter(|t| t.archived == app.show_archived && t.done)
+        .count();
     let status = if total == 0 {
         "empty".to_string()
     } else {
@@ -34,6 +40,7 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
     let title = Paragraph::new(Line::from(vec![
         Span::styled(" ✅", Style::default().fg(Color::Green).bold()),
         Span::styled(" tui-todo", Style::default().fg(Color::White).bold()),
+        Span::styled(format!("  [{}]", label), Style::default().fg(Color::Cyan)),
     ]))
     .block(
         Block::default()
@@ -46,34 +53,39 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_list(frame: &mut Frame, area: Rect, app: &App) {
-    if app.todos.is_empty() {
-        render_empty_state(frame, area);
+    let q = app.search_query.to_lowercase();
+    let visible: Vec<&Todo> = app
+        .todos
+        .iter()
+        .filter(|t| {
+            app.show_archived == t.archived
+                && (q.is_empty() || t.description.to_lowercase().contains(&q))
+        })
+        .collect();
+
+    if visible.is_empty() {
+        render_empty_state(frame, area, app);
         return;
     }
 
-    let items: Vec<ListItem> = app
-        .todos
+    let sel = app.selected_index.min(visible.len().saturating_sub(1));
+    let items: Vec<ListItem> = visible
         .iter()
         .enumerate()
         .map(|(i, todo)| {
-            let is_selected = i == app.selected_index;
+            let is_selected = i == sel;
             let checkbox = if todo.done { "✓" } else { "○" };
             let check_color = if todo.done { Color::Green } else { Color::Yellow };
-
             let text_style = if todo.done {
                 Style::default().fg(Color::DarkGray).crossed_out()
             } else {
                 Style::default().fg(Color::White)
             };
-
             let prefix = if is_selected { "▸" } else { " " };
             let date = todo.created_at.format("%m-%d %H:%M").to_string();
 
             let line = Line::from(vec![
-                Span::styled(
-                    format!("{} ", prefix),
-                    Style::default().fg(Color::Cyan).bold(),
-                ),
+                Span::styled(format!("{} ", prefix), Style::default().fg(Color::Cyan).bold()),
                 Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
                 Span::styled(todo.description.clone(), text_style),
                 Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
@@ -89,20 +101,30 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
+    let list_title = if app.show_archived {
+        " Archived "
+    } else {
+        " Todos "
+    };
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" Todos ", Style::default().fg(Color::White)))
+            .title(Span::styled(list_title, Style::default().fg(Color::White)))
             .border_style(Style::default().fg(Color::Cyan)),
     );
 
     frame.render_widget(list, area);
 }
 
-fn render_empty_state(frame: &mut Frame, area: Rect) {
+fn render_empty_state(frame: &mut Frame, area: Rect, app: &App) {
+    let list_title = if app.show_archived {
+        " Archived "
+    } else {
+        " Todos "
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(" Todos ", Style::default().fg(Color::White)))
+        .title(Span::styled(list_title, Style::default().fg(Color::White)))
         .border_style(Style::default().fg(Color::Cyan));
     frame.render_widget(block.clone(), area);
 
@@ -114,23 +136,41 @@ fn render_empty_state(frame: &mut Frame, area: Rect) {
     ]);
     let [_, content_area, _] = vertical.areas(inner);
 
-    let text = vec![
+    let message = if !app.search_query.is_empty() {
+        format!("No matches for '{}'", app.search_query)
+    } else if app.show_archived {
+        "No archived todos".to_string()
+    } else {
+        "No todos yet".to_string()
+    };
+
+    let sub = if !app.search_query.is_empty() {
+        "Press Esc to clear"
+    } else if app.show_archived {
+        ""
+    } else {
+        "Press 'n' to add your first one"
+    };
+
+    let mut lines = vec![
         Line::from(vec![Span::styled(
             "○",
             Style::default().fg(Color::Yellow).bold(),
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "No todos yet",
+            message,
             Style::default().fg(Color::White).bold(),
         )]),
-        Line::from(vec![Span::styled(
-            "Press 'n' to add your first one",
-            Style::default().fg(Color::DarkGray),
-        )]),
     ];
+    if !sub.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            sub,
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
 
-    let paragraph = Paragraph::new(text).alignment(Alignment::Center);
+    let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
     frame.render_widget(paragraph, content_area);
 }
 
@@ -144,18 +184,25 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw("new  "),
                 Span::styled("e ", Style::default().fg(Color::Green).bold()),
                 Span::raw("edit  "),
+                Span::styled("a ", Style::default().fg(Color::Magenta).bold()),
+                Span::raw("archive  "),
                 Span::styled("d ", Style::default().fg(Color::Red).bold()),
                 Span::raw("delete  "),
                 Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
                 Span::raw("toggle  "),
+                Span::styled("/ ", Style::default().fg(Color::Cyan).bold()),
+                Span::raw("search  "),
                 Span::styled("\u{2191}/\u{2193} ", Style::default().fg(Color::Cyan).bold()),
-                Span::raw("navigate"),
+                Span::raw("navigate  "),
+                Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
+                Span::raw("view"),
             ],
             Style::default(),
         ),
-        InputMode::Adding | InputMode::Editing => {
+        InputMode::Adding | InputMode::Editing | InputMode::Searching => {
             let label = match app.input_mode {
                 InputMode::Editing => " EDIT: ",
+                InputMode::Searching => " FIND: ",
                 _ => " INPUT: ",
             };
             (

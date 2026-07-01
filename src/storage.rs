@@ -9,6 +9,8 @@ pub struct Todo {
     pub id: u64,
     pub description: String,
     pub done: bool,
+    #[serde(default)]
+    pub archived: bool,
     pub created_at: NaiveDateTime,
 }
 
