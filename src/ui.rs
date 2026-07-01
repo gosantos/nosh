@@ -142,7 +142,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(list, area);
 }
 
-fn render_list(frame: &mut Frame, area: Rect, app: &App) {
+fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let visible = app.fuzzy_filter_todos();
 
     let border_color = if app.panel == Panel::Main {
@@ -157,9 +157,20 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let sel = app.selected_index.min(visible.len().saturating_sub(1));
+
+    let list_height = area.height.saturating_sub(2) as usize;
+    let max_scroll = visible.len().saturating_sub(list_height);
+    if sel < app.list_scroll {
+        app.list_scroll = sel;
+    } else if sel >= app.list_scroll + list_height {
+        app.list_scroll = sel.saturating_sub(list_height).saturating_add(1);
+    }
+    app.list_scroll = app.list_scroll.min(max_scroll);
+
     let items: Vec<ListItem> = visible
         .iter()
         .enumerate()
+        .skip(app.list_scroll)
         .map(|(i, (todo_idx, fuzzy_match))| {
             let todo = &app.todos[*todo_idx];
             let is_selected = app.panel == Panel::Main && i == sel;
