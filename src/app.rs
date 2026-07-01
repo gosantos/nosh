@@ -402,7 +402,7 @@ impl App {
             updated_at: now,
         });
         self.notes.sort_by_key(|n| n.id);
-        self.side_index = 2 + self.notes.len().saturating_sub(1);
+        self.side_index = 2 + self.notes.len();
         self.view = View::Note;
         self.panel = Panel::Main;
         self.note_lines = vec![String::new()];
