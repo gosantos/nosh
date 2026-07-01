@@ -1,4 +1,5 @@
 mod app;
+mod fuzzy;
 mod markdown;
 mod storage;
 mod ui;
@@ -7,7 +8,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use app::{App, InputMode, NoteMode, Panel, View};
+use app::{App, InputMode, NoteMode, PaletteKind, Panel, View};
 use chrono::Local;
 use clap::Parser;
 use crossterm::{
@@ -41,18 +42,33 @@ enum Command {
         archived: bool,
     },
     #[command(visible_alias = "a")]
-    Add { description: String },
+    Add {
+        description: String,
+    },
     #[command(visible_alias = "e")]
-    Edit { id: u64, description: String },
+    Edit {
+        id: u64,
+        description: String,
+    },
     #[command(visible_alias = "do")]
-    Done { id: u64 },
+    Done {
+        id: u64,
+    },
     #[command(visible_alias = "un")]
-    Undone { id: u64 },
+    Undone {
+        id: u64,
+    },
     #[command(visible_alias = "rm")]
-    Delete { id: u64 },
-    Archive { id: u64 },
+    Delete {
+        id: u64,
+    },
+    Archive {
+        id: u64,
+    },
     #[command(visible_alias = "ua")]
-    Unarchive { id: u64 },
+    Unarchive {
+        id: u64,
+    },
     #[command(visible_alias = "grep")]
     Search {
         query: String,
@@ -93,7 +109,10 @@ fn open_editor(content: &str) -> io::Result<String> {
     let new_content = std::fs::read_to_string(&tmp)?;
     let _ = std::fs::remove_file(&tmp);
     if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "editor exited with error"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "editor exited with error",
+        ));
     }
     Ok(new_content)
 }
@@ -122,7 +141,12 @@ fn main() -> io::Result<()> {
 
 fn run_cli(cmd: Command) {
     match cmd {
-        Command::List { done, pending, ids, archived } => list_todos(done, pending, ids, archived),
+        Command::List {
+            done,
+            pending,
+            ids,
+            archived,
+        } => list_todos(done, pending, ids, archived),
         Command::Add { description } => add_todo(&description),
         Command::Edit { id, description } => edit_todo(id, &description),
         Command::Done { id } => mark_done(id),
@@ -152,9 +176,20 @@ fn list_todos(done: bool, pending: bool, ids: bool, archived: bool) {
     for t in filtered {
         let status = if t.done { "[x]" } else { "[ ]" };
         if ids {
-            println!("{}  {:>16}  {}  {}", status, t.id, t.created_at.format("%m-%d %H:%M"), t.description);
+            println!(
+                "{}  {:>16}  {}  {}",
+                status,
+                t.id,
+                t.created_at.format("%m-%d %H:%M"),
+                t.description
+            );
         } else {
-            println!("{}  {}  {}", status, t.created_at.format("%m-%d %H:%M"), t.description);
+            println!(
+                "{}  {}  {}",
+                status,
+                t.created_at.format("%m-%d %H:%M"),
+                t.description
+            );
         }
     }
 }
@@ -281,7 +316,12 @@ fn search_todos(query: &str, archived: bool) {
     }
     for t in results {
         let status = if t.done { "[x]" } else { "[ ]" };
-        println!("{}  {}  {}", status, t.created_at.format("%m-%d %H:%M"), t.description);
+        println!(
+            "{}  {}  {}",
+            status,
+            t.created_at.format("%m-%d %H:%M"),
+            t.description
+        );
     }
 }
 
@@ -295,7 +335,12 @@ fn run_note_cmd(cmd: NoteCommand) {
                 return;
             }
             for n in &notes {
-                println!("{}  {}  {}", n.id, n.created_at.format("%m-%d %H:%M"), n.title);
+                println!(
+                    "{}  {}  {}",
+                    n.id,
+                    n.created_at.format("%m-%d %H:%M"),
+                    n.title
+                );
             }
         }
         NoteCommand::New { title } => {
@@ -427,10 +472,19 @@ fn handle_event(app: &mut App) -> io::Result<()> {
 
             (InputMode::Normal, NoteMode::Viewing, Panel::Main, View::Note) => match key.code {
                 KeyCode::Char('q') => app.should_quit = true,
-                KeyCode::Char('i') | KeyCode::Char('e') => app.start_edit_note(),
-                KeyCode::Char('t') => { app.view = View::Todos; app.show_archived = false; app.selected_index = 0; }
-                KeyCode::Char('a') => { app.view = View::Todos; app.show_archived = true; app.selected_index = 0; }
-                KeyCode::Char('n') => app.new_note_inline(),
+                KeyCode::Char('i') => app.start_edit_note(),
+                KeyCode::Char('t') => {
+                    app.view = View::Todos;
+                    app.show_archived = false;
+                    app.selected_index = 0;
+                }
+                KeyCode::Char('a') => {
+                    app.view = View::Todos;
+                    app.show_archived = true;
+                    app.selected_index = 0;
+                }
+                KeyCode::Char('n') => app.open_palette(PaletteKind::Omni),
+                KeyCode::Char('e') => app.open_palette(PaletteKind::Notes),
                 KeyCode::Char('c') => {
                     app.view = View::Todos;
                     app.show_archived = false;
@@ -446,16 +500,23 @@ fn handle_event(app: &mut App) -> io::Result<()> {
 
             (InputMode::Normal, _, Panel::Main, View::Todos) => match key.code {
                 KeyCode::Char('q') => app.should_quit = true,
-                KeyCode::Char('t') => { app.show_archived = false; app.selected_index = 0; }
-                KeyCode::Char('a') => { app.show_archived = true; app.selected_index = 0; }
-                KeyCode::Char('n') => app.new_note_inline(),
+                KeyCode::Char('t') => {
+                    app.show_archived = false;
+                    app.selected_index = 0;
+                }
+                KeyCode::Char('a') => {
+                    app.show_archived = true;
+                    app.selected_index = 0;
+                }
+                KeyCode::Char('n') => app.open_palette(PaletteKind::Omni),
+                KeyCode::Char('e') => app.open_palette(PaletteKind::Notes),
                 KeyCode::Char('c') => {
                     app.show_archived = false;
                     app.search_query.clear();
                     app.input_mode = InputMode::Adding;
                     app.input_buffer.clear();
                 }
-                KeyCode::Enter | KeyCode::Char('e') => {
+                KeyCode::Enter => {
                     if let Some(idx) = app.selected_todo_index() {
                         app.input_mode = InputMode::Editing;
                         app.input_buffer = app.todos[idx].description.clone();
@@ -481,9 +542,20 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 KeyCode::Up | KeyCode::Char('k') => app.side_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.side_down(),
                 KeyCode::Enter => app.select_sidebar(),
-                KeyCode::Char('t') => { app.view = View::Todos; app.show_archived = false; app.selected_index = 0; app.panel = Panel::Main; }
-                KeyCode::Char('a') => { app.view = View::Todos; app.show_archived = true; app.selected_index = 0; app.panel = Panel::Main; }
-                KeyCode::Char('n') => app.new_note_inline(),
+                KeyCode::Char('t') => {
+                    app.view = View::Todos;
+                    app.show_archived = false;
+                    app.selected_index = 0;
+                    app.panel = Panel::Main;
+                }
+                KeyCode::Char('a') => {
+                    app.view = View::Todos;
+                    app.show_archived = true;
+                    app.selected_index = 0;
+                    app.panel = Panel::Main;
+                }
+                KeyCode::Char('n') => app.open_palette(PaletteKind::Omni),
+                KeyCode::Char('e') => app.open_palette(PaletteKind::Notes),
                 KeyCode::Char('c') => {
                     app.view = View::Todos;
                     app.show_archived = false;
@@ -546,6 +618,16 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.search_query = app.input_buffer.clone();
                     app.selected_index = 0;
                 }
+                _ => {}
+            },
+
+            (InputMode::Palette, _, _, _) => match key.code {
+                KeyCode::Esc => app.close_palette(),
+                KeyCode::Enter => app.palette_select(),
+                KeyCode::Up | KeyCode::Char('k') => app.palette_move_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.palette_move_down(),
+                KeyCode::Backspace => app.palette_backspace(),
+                KeyCode::Char(c) => app.palette_type_char(c),
                 _ => {}
             },
         }

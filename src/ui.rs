@@ -2,16 +2,18 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
-use crate::app::{App, InputMode, NoteMode, Panel, SideItem, View};
+use crate::app::{App, InputMode, NoteMode, PaletteKind, Panel, SideItem, View};
 use crate::markdown;
-use crate::storage::Todo;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
     let vertical = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(1),
@@ -30,6 +32,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => render_list(frame, main_area, app),
     }
     render_footer(frame, footer_area, app);
+
+    if matches!(app.input_mode, InputMode::Palette) {
+        render_palette(frame, area, app);
+    }
 }
 
 fn render_title(frame: &mut Frame, area: Rect, app: &App) {
@@ -39,7 +45,11 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
         (View::Todos, _) if app.show_archived => "Archived",
         _ => "Todos",
     };
-    let total = app.todos.iter().filter(|t| t.archived == app.show_archived).count();
+    let total = app
+        .todos
+        .iter()
+        .filter(|t| t.archived == app.show_archived)
+        .count();
     let done = app
         .todos
         .iter()
@@ -60,7 +70,10 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
-            .title(Span::styled(status, Style::default().fg(Color::Yellow).bold()))
+            .title(Span::styled(
+                status,
+                Style::default().fg(Color::Yellow).bold(),
+            ))
             .title_alignment(Alignment::Right),
     );
     frame.render_widget(title, area);
@@ -130,15 +143,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_list(frame: &mut Frame, area: Rect, app: &App) {
-    let q = app.search_query.to_lowercase();
-    let visible: Vec<&Todo> = app
-        .todos
-        .iter()
-        .filter(|t| {
-            app.show_archived == t.archived
-                && (q.is_empty() || t.description.to_lowercase().contains(&q))
-        })
-        .collect();
+    let visible = app.fuzzy_filter_todos();
 
     let border_color = if app.panel == Panel::Main {
         Color::Yellow
@@ -155,24 +160,48 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App) {
     let items: Vec<ListItem> = visible
         .iter()
         .enumerate()
-        .map(|(i, todo)| {
+        .map(|(i, (todo_idx, fuzzy_match))| {
+            let todo = &app.todos[*todo_idx];
             let is_selected = app.panel == Panel::Main && i == sel;
             let checkbox = if todo.done { "✓" } else { "○" };
-            let check_color = if todo.done { Color::Green } else { Color::Yellow };
-            let text_style = if todo.done {
-                Style::default().fg(Color::DarkGray).crossed_out()
+            let check_color = if todo.done {
+                Color::Green
             } else {
-                Style::default().fg(Color::White)
+                Color::Yellow
             };
             let prefix = if is_selected { "▸" } else { " " };
             let date = todo.created_at.format("%m-%d %H:%M").to_string();
 
-            let line = Line::from(vec![
-                Span::styled(format!("{} ", prefix), Style::default().fg(Color::Cyan).bold()),
+            let mut spans = vec![
+                Span::styled(
+                    format!("{} ", prefix),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
                 Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
-                Span::styled(todo.description.clone(), text_style),
-                Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
-            ]);
+            ];
+
+            let highlighted = crate::fuzzy::highlight(&todo.description, &fuzzy_match.indices);
+            for (segment, is_match) in highlighted.segments {
+                let style = if todo.done {
+                    Style::default()
+                        .fg(if is_match {
+                            Color::Cyan
+                        } else {
+                            Color::DarkGray
+                        })
+                        .crossed_out()
+                } else {
+                    Style::default().fg(if is_match { Color::Cyan } else { Color::White })
+                };
+                spans.push(Span::styled(segment, style));
+            }
+
+            spans.push(Span::styled(
+                format!("  {}", date),
+                Style::default().fg(Color::DarkGray),
+            ));
+
+            let line = Line::from(spans);
 
             let item_style = if is_selected {
                 Style::default().bg(Color::Rgb(35, 40, 48))
@@ -277,7 +306,11 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let title = if note.title.is_empty() { "Note" } else { &note.title };
+    let title = if note.title.is_empty() {
+        "Note"
+    } else {
+        &note.title
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", title))
@@ -290,11 +323,7 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
     let lines = markdown::render(&note.content, inner.width);
     let total_lines = lines.len();
 
-    let visible: Vec<&Line> = lines
-        .iter()
-        .skip(app.note_scroll)
-        .take(max_lines)
-        .collect();
+    let visible: Vec<&Line> = lines.iter().skip(app.note_scroll).take(max_lines).collect();
 
     let content = if visible.is_empty() {
         vec![
@@ -332,7 +361,10 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
 fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
     let border_color = Color::Yellow;
 
-    let title = app.current_note().map(|n| n.title.clone()).unwrap_or_default();
+    let title = app
+        .current_note()
+        .map(|n| n.title.clone())
+        .unwrap_or_default();
     let display_title = if title.is_empty() { "Editing" } else { &title };
 
     let block = Block::default()
@@ -372,7 +404,10 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
                 Line::from(vec![
                     Span::styled(numbered, Style::default().fg(Color::DarkGray)),
                     Span::raw(before),
-                    Span::styled(at, Style::default().bg(Color::Rgb(80, 80, 80)).fg(Color::White)),
+                    Span::styled(
+                        at,
+                        Style::default().bg(Color::Rgb(80, 80, 80)).fg(Color::White),
+                    ),
                     Span::raw(after),
                 ])
             } else {
@@ -406,13 +441,141 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn render_palette(frame: &mut Frame, area: Rect, app: &App) {
+    let popup = centered_rect(area, 80, 70);
+    frame.render_widget(Clear, popup);
+
+    let title = match app.palette_kind {
+        PaletteKind::Omni => " Command Palette ",
+        PaletteKind::Notes => " Explore Notes ",
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            title,
+            Style::default().fg(Color::White).bold(),
+        ))
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(block.clone(), popup);
+
+    let inner = block.inner(popup);
+    let vertical = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ]);
+    let [input_area, list_area, hint_area] = vertical.areas(inner);
+
+    // Input field.
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let input_inner = input_block.inner(input_area);
+    frame.render_widget(input_block, input_area);
+    let input_text = Paragraph::new(Line::from(vec![
+        Span::styled("> ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw(&app.palette_query),
+    ]));
+    frame.render_widget(input_text, input_inner);
+
+    // Results.
+    if app.palette_items.is_empty() {
+        let empty = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "Type to search or create",
+                Style::default().fg(Color::DarkGray),
+            )]),
+        ])
+        .alignment(Alignment::Center);
+        frame.render_widget(empty, list_area);
+    } else {
+        let items: Vec<ListItem> = app
+            .palette_items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let is_selected = i == app.palette_selected;
+                let bg = if is_selected {
+                    Style::default().bg(Color::Rgb(35, 40, 48))
+                } else {
+                    Style::default()
+                };
+
+                let mut spans: Vec<Span> = Vec::new();
+                let prefix = if is_selected { "▸ " } else { "  " };
+                spans.push(Span::styled(
+                    prefix,
+                    Style::default().fg(Color::Cyan).bold(),
+                ));
+                spans.push(Span::styled(format!("{} ", item.icon), Style::default()));
+
+                let highlighted = crate::fuzzy::highlight(&item.title, &item.matches);
+                for (segment, is_match) in highlighted.segments {
+                    let style = if is_match {
+                        Style::default().fg(Color::Cyan).bold()
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    spans.push(Span::styled(segment, style));
+                }
+
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    item.subtitle.clone(),
+                    Style::default().fg(Color::DarkGray),
+                ));
+
+                let line = Line::from(spans);
+                ListItem::new(line).style(bg)
+            })
+            .collect();
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::NONE)
+                .title(Span::styled(
+                    format!(" {} results ", app.palette_items.len()),
+                    Style::default().fg(Color::DarkGray),
+                ))
+                .title_alignment(Alignment::Right),
+        );
+        frame.render_widget(list, list_area);
+    }
+
+    // Hint.
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("↑/↓ ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("nav  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
+        Span::styled("select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc ", Style::default().fg(Color::Red).bold()),
+        Span::styled("close", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(hint, hint_area);
+}
+
+fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    let max_width = area.width.saturating_sub(4).max(1);
+    let width = (area.width * percent_x / 100).min(max_width).max(1);
+    let max_height = area.height.saturating_sub(4).max(1);
+    let height = (area.height * percent_y / 100).min(max_height).max(1);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width, height)
+}
+
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let (text, style) = match (&app.input_mode, &app.note_mode) {
         (InputMode::Normal, NoteMode::Editing) => (
             vec![
                 Span::styled("  Esc ", Style::default().fg(Color::Red).bold()),
                 Span::raw("save  "),
-                Span::styled("\u{2191}/\u{2193}\u{2190}/\u{2192} ", Style::default().fg(Color::Cyan).bold()),
+                Span::styled(
+                    "\u{2191}/\u{2193}\u{2190}/\u{2192} ",
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
                 Span::raw("move  "),
                 Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
                 Span::raw("newline  "),
@@ -425,18 +588,13 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         ),
         (InputMode::Normal, _) => {
             let focused = match (&app.panel, &app.view) {
-                (Panel::Sidebar, _) => Span::styled(
-                    "  focused: sidebar ",
-                    Style::default().fg(Color::Yellow),
-                ),
-                (Panel::Main, View::Note) => Span::styled(
-                    "  focused: note ",
-                    Style::default().fg(Color::Yellow),
-                ),
-                _ => Span::styled(
-                    "  focused: todos ",
-                    Style::default().fg(Color::Yellow),
-                ),
+                (Panel::Sidebar, _) => {
+                    Span::styled("  focused: sidebar ", Style::default().fg(Color::Yellow))
+                }
+                (Panel::Main, View::Note) => {
+                    Span::styled("  focused: note ", Style::default().fg(Color::Yellow))
+                }
+                _ => Span::styled("  focused: todos ", Style::default().fg(Color::Yellow)),
             };
             (
                 vec![
@@ -447,18 +605,21 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled("a ", Style::default().fg(Color::Magenta).bold()),
                     Span::raw("archived  "),
                     Span::styled("n ", Style::default().fg(Color::Green).bold()),
-                    Span::raw("note  "),
+                    Span::raw("palette  "),
+                    Span::styled("e ", Style::default().fg(Color::Green).bold()),
+                    Span::raw("explore  "),
                     Span::styled("c ", Style::default().fg(Color::Green).bold()),
                     Span::raw("create  "),
-                    Span::styled("e ", Style::default().fg(Color::Green).bold()),
-                    Span::raw("edit  "),
                     Span::styled("d ", Style::default().fg(Color::Red).bold()),
                     Span::raw("delete  "),
                     Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
                     Span::raw("toggle  "),
                     Span::styled("/ ", Style::default().fg(Color::Cyan).bold()),
                     Span::raw("search  "),
-                    Span::styled("\u{2191}/\u{2193} ", Style::default().fg(Color::Cyan).bold()),
+                    Span::styled(
+                        "\u{2191}/\u{2193} ",
+                        Style::default().fg(Color::Cyan).bold(),
+                    ),
                     Span::raw("nav  "),
                     Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
                     Span::raw("panel"),
@@ -467,6 +628,19 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default(),
             )
         }
+        (InputMode::Palette, _) => (
+            vec![
+                Span::styled(
+                    "  Command palette ",
+                    Style::default().fg(Color::Green).bold(),
+                ),
+                Span::styled(
+                    "↑/↓ nav  Enter select  Esc close",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+            Style::default(),
+        ),
         _ => {
             let label = match app.input_mode {
                 InputMode::Editing => " EDIT: ",

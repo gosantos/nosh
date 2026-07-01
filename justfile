@@ -2,7 +2,7 @@ default:
     @just --list
 
 dev:
-    cargo watch -x 'run --release'
+    cargo watch -x 'run --release --bin tui-todo'
 
 build:
     cargo build --release

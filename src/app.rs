@@ -8,6 +8,28 @@ pub enum InputMode {
     Adding,
     Editing,
     Searching,
+    Palette,
+}
+
+#[derive(Clone, Copy)]
+pub enum PaletteKind {
+    Omni,
+    Notes,
+}
+
+pub enum PaletteAction {
+    OpenNote(u64),
+    CreateNote(String),
+    CreateTodo(String),
+}
+
+pub struct PaletteItem {
+    pub title: String,
+    pub subtitle: String,
+    pub icon: char,
+    pub action: PaletteAction,
+    pub score: i64,
+    pub matches: Vec<usize>,
 }
 
 pub enum NoteMode {
@@ -44,6 +66,10 @@ pub struct App {
     pub note_cursor_col: usize,
     pub note_lines: Vec<String>,
     pub side_index: usize,
+    pub palette_kind: PaletteKind,
+    pub palette_query: String,
+    pub palette_items: Vec<PaletteItem>,
+    pub palette_selected: usize,
     storage_path: PathBuf,
     notes_path: PathBuf,
 }
@@ -88,6 +114,10 @@ impl App {
             note_cursor_col: 0,
             note_lines: Vec::new(),
             side_index: 0,
+            palette_kind: PaletteKind::Omni,
+            palette_query: String::new(),
+            palette_items: Vec::new(),
+            palette_selected: 0,
             storage_path,
             notes_path,
         }
@@ -129,11 +159,7 @@ impl App {
 
     pub fn start_edit_note(&mut self) {
         if let Some(note) = self.current_note() {
-            self.note_lines = note
-                .content
-                .lines()
-                .map(|l| l.to_string())
-                .collect();
+            self.note_lines = note.content.lines().map(|l| l.to_string()).collect();
             if self.note_lines.is_empty() {
                 self.note_lines.push(String::new());
             }
@@ -200,9 +226,9 @@ impl App {
     pub fn note_cursor_up(&mut self) {
         if self.note_cursor_line > 0 {
             self.note_cursor_line -= 1;
-            self.note_cursor_col = self.note_cursor_col.min(
-                self.note_lines[self.note_cursor_line].len(),
-            );
+            self.note_cursor_col = self
+                .note_cursor_col
+                .min(self.note_lines[self.note_cursor_line].len());
             if self.note_cursor_line < self.note_scroll {
                 self.note_scroll = self.note_cursor_line;
             }
@@ -212,9 +238,9 @@ impl App {
     pub fn note_cursor_down(&mut self) {
         if self.note_cursor_line + 1 < self.note_lines.len() {
             self.note_cursor_line += 1;
-            self.note_cursor_col = self.note_cursor_col.min(
-                self.note_lines[self.note_cursor_line].len(),
-            );
+            self.note_cursor_col = self
+                .note_cursor_col
+                .min(self.note_lines[self.note_cursor_line].len());
             let max_scroll = self.note_lines.len().saturating_sub(1);
             if self.note_cursor_line >= self.note_scroll + max_scroll.min(20) {
                 self.note_scroll = self.note_cursor_line.saturating_sub(19);
@@ -254,27 +280,12 @@ impl App {
     }
 
     pub fn visible_count(&self) -> usize {
-        let q = self.search_query.to_lowercase();
-        self.todos
-            .iter()
-            .filter(|t| {
-                self.show_archived == t.archived
-                    && (q.is_empty() || t.description.to_lowercase().contains(&q))
-            })
-            .count()
+        self.fuzzy_filter_todos().len()
     }
 
     pub fn selected_todo_index(&self) -> Option<usize> {
-        let q = self.search_query.to_lowercase();
-        self.todos
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| {
-                self.show_archived == t.archived
-                    && (q.is_empty() || t.description.to_lowercase().contains(&q))
-            })
-            .map(|(i, _)| i)
-            .nth(self.selected_index)
+        let filtered = self.fuzzy_filter_todos();
+        filtered.get(self.selected_index).map(|(i, _)| *i)
     }
 
     fn clamp_selection(&mut self) {
@@ -392,26 +403,6 @@ impl App {
         }
     }
 
-    pub fn new_note_inline(&mut self) {
-        let now = Local::now().naive_local();
-        self.notes.push(Note {
-            id: storage::next_id(),
-            title: String::new(),
-            content: String::new(),
-            created_at: now,
-            updated_at: now,
-        });
-        self.notes.sort_by_key(|n| n.id);
-        self.side_index = 2 + self.notes.len();
-        self.view = View::Note;
-        self.panel = Panel::Main;
-        self.note_lines = vec![String::new()];
-        self.note_cursor_line = 0;
-        self.note_cursor_col = 0;
-        self.note_scroll = 0;
-        self.note_mode = NoteMode::Editing;
-    }
-
     pub fn delete_note_by_side_index(&mut self) {
         let id = {
             let items = self.side_items();
@@ -439,6 +430,210 @@ impl App {
     pub fn note_scroll_down(&mut self) {
         self.note_scroll += 1;
     }
+
+    pub fn open_palette(&mut self, kind: PaletteKind) {
+        self.input_mode = InputMode::Palette;
+        self.palette_kind = kind;
+        self.palette_query.clear();
+        self.palette_selected = 0;
+        self.refresh_palette();
+    }
+
+    pub fn close_palette(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.palette_query.clear();
+        self.palette_items.clear();
+        self.palette_selected = 0;
+    }
+
+    pub fn palette_type_char(&mut self, c: char) {
+        self.palette_query.push(c);
+        self.palette_selected = 0;
+        self.refresh_palette();
+    }
+
+    pub fn palette_backspace(&mut self) {
+        self.palette_query.pop();
+        self.palette_selected = 0;
+        self.refresh_palette();
+    }
+
+    pub fn palette_move_up(&mut self) {
+        if self.palette_selected > 0 {
+            self.palette_selected -= 1;
+        }
+    }
+
+    pub fn palette_move_down(&mut self) {
+        if self.palette_selected + 1 < self.palette_items.len() {
+            self.palette_selected += 1;
+        }
+    }
+
+    pub fn palette_select(&mut self) {
+        let action = self
+            .palette_items
+            .get(self.palette_selected)
+            .map(|item| match &item.action {
+                PaletteAction::OpenNote(id) => PaletteAction::OpenNote(*id),
+                PaletteAction::CreateNote(title) => PaletteAction::CreateNote(title.clone()),
+                PaletteAction::CreateTodo(desc) => PaletteAction::CreateTodo(desc.clone()),
+            });
+
+        match action {
+            Some(PaletteAction::OpenNote(id)) => {
+                self.close_palette();
+                self.view = View::Note;
+                self.panel = Panel::Main;
+                self.note_mode = NoteMode::Viewing;
+                let items = self.side_items();
+                if let Some(idx) = items
+                    .iter()
+                    .position(|item| matches!(item, SideItem::Note(note_id, _) if *note_id == id))
+                {
+                    self.side_index = idx;
+                }
+            }
+            Some(PaletteAction::CreateNote(title)) => {
+                self.close_palette();
+                let now = Local::now().naive_local();
+                let content = if title.is_empty() {
+                    String::new()
+                } else {
+                    format!("# {}\n", title)
+                };
+                let note = Note {
+                    id: storage::next_id(),
+                    title: extract_title(&content),
+                    content,
+                    created_at: now,
+                    updated_at: now,
+                };
+                self.notes.push(note);
+                self.notes.sort_by_key(|n| n.id);
+                storage::save_notes(&self.notes_path, &self.notes);
+                self.view = View::Note;
+                self.panel = Panel::Main;
+                self.side_index = 2 + self.notes.len().saturating_sub(1);
+                self.start_edit_note();
+            }
+            Some(PaletteAction::CreateTodo(desc)) => {
+                self.close_palette();
+                let desc = desc.trim().to_string();
+                if !desc.is_empty() {
+                    self.todos.push(Todo {
+                        id: storage::next_id(),
+                        description: desc,
+                        done: false,
+                        archived: false,
+                        created_at: Local::now().naive_local(),
+                    });
+                    self.todos.sort_by_key(|t| t.id);
+                    storage::save(&self.storage_path, &self.todos);
+                }
+                self.view = View::Todos;
+                self.show_archived = false;
+                self.panel = Panel::Main;
+                self.selected_index = 0;
+            }
+            None => {}
+        }
+    }
+
+    pub fn refresh_palette(&mut self) {
+        let query = self.palette_query.trim();
+        let mut items: Vec<PaletteItem> = Vec::new();
+
+        match self.palette_kind {
+            PaletteKind::Omni | PaletteKind::Notes => {
+                let candidates: Vec<String> = self
+                    .notes
+                    .iter()
+                    .map(|n| format!("{} {}", n.title, preview(&n.content)))
+                    .collect();
+                let matches = crate::fuzzy::filter(query, &candidates);
+
+                for (note_idx, m) in matches {
+                    let note = &self.notes[note_idx];
+                    let title_matches: Vec<usize> = if query.is_empty() {
+                        Vec::new()
+                    } else {
+                        crate::fuzzy::fuzzy_match(query, &note.title)
+                            .map(|fm| fm.indices)
+                            .unwrap_or_default()
+                    };
+                    items.push(PaletteItem {
+                        title: note.title.clone(),
+                        subtitle: preview(&note.content),
+                        icon: '📝',
+                        action: PaletteAction::OpenNote(note.id),
+                        score: m.score,
+                        matches: title_matches,
+                    });
+                }
+            }
+        }
+
+        if !query.is_empty() {
+            let create_score = 1000_i64; // Always keep create actions near the top.
+            if matches!(self.palette_kind, PaletteKind::Omni | PaletteKind::Notes) {
+                items.push(PaletteItem {
+                    title: format!("Create note: {}", query),
+                    subtitle: "Start a new note".to_string(),
+                    icon: '✨',
+                    action: PaletteAction::CreateNote(query.to_string()),
+                    score: create_score,
+                    matches: Vec::new(),
+                });
+            }
+            if matches!(self.palette_kind, PaletteKind::Omni) {
+                items.push(PaletteItem {
+                    title: format!("Create todo: {}", query),
+                    subtitle: "Add a new todo".to_string(),
+                    icon: '✅',
+                    action: PaletteAction::CreateTodo(query.to_string()),
+                    score: create_score - 1,
+                    matches: Vec::new(),
+                });
+            }
+        }
+
+        if query.is_empty() {
+            // Stable order for empty query.
+            items.sort_by_key(|item| match &item.action {
+                PaletteAction::OpenNote(id) => *id,
+                _ => u64::MAX,
+            });
+        } else {
+            items.sort_by_key(|b| std::cmp::Reverse(b.score));
+        }
+
+        self.palette_items = items;
+        self.palette_selected = self
+            .palette_selected
+            .min(self.palette_items.len().saturating_sub(1));
+    }
+
+    pub fn fuzzy_filter_todos(&self) -> Vec<(usize, crate::fuzzy::FuzzyMatch)> {
+        let q = self.search_query.trim();
+        let candidates: Vec<String> = self.todos.iter().map(|t| t.description.clone()).collect();
+        crate::fuzzy::filter(q, &candidates)
+            .into_iter()
+            .filter(|(idx, _)| self.show_archived == self.todos[*idx].archived)
+            .collect()
+    }
+}
+
+fn preview(content: &str) -> String {
+    content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(80)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn extract_title(content: &str) -> String {

@@ -22,9 +22,7 @@ pub fn render(content: &str, width: u16) -> Vec<Line<'_>> {
                     _ => "### ",
                 };
                 style = match level {
-                    HeadingLevel::H1 | HeadingLevel::H2 => {
-                        Style::default().fg(Color::Cyan).bold()
-                    }
+                    HeadingLevel::H1 | HeadingLevel::H2 => Style::default().fg(Color::Cyan).bold(),
                     _ => Style::default().fg(Color::Cyan),
                 };
                 current.push(Span::styled(prefix, style));
@@ -103,9 +101,7 @@ pub fn render(content: &str, width: u16) -> Vec<Line<'_>> {
             Event::Code(text) => {
                 current.push(Span::styled(
                     text.to_string(),
-                    Style::default()
-                        .bg(Color::Rgb(50, 50, 50))
-                        .fg(Color::Green),
+                    Style::default().bg(Color::Rgb(50, 50, 50)).fg(Color::Green),
                 ));
             }
 
