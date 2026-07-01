@@ -7,14 +7,7 @@ pub enum InputMode {
     Normal,
     Adding,
     Editing,
-    Searching,
     Palette,
-}
-
-#[derive(Clone, Copy)]
-pub enum PaletteKind {
-    Omni,
-    Notes,
 }
 
 pub enum PaletteAction {
@@ -57,7 +50,6 @@ pub struct App {
     pub selected_index: usize,
     pub should_quit: bool,
     pub show_archived: bool,
-    pub search_query: String,
     pub panel: Panel,
     pub view: View,
     pub note_mode: NoteMode,
@@ -67,7 +59,6 @@ pub struct App {
     pub note_cursor_col: usize,
     pub note_lines: Vec<String>,
     pub side_index: usize,
-    pub palette_kind: PaletteKind,
     pub palette_query: String,
     pub palette_items: Vec<PaletteItem>,
     pub palette_selected: usize,
@@ -106,7 +97,6 @@ impl App {
             selected_index: 0,
             should_quit: false,
             show_archived: false,
-            search_query: String::new(),
             panel: Panel::Main,
             view: View::Todos,
             note_mode: NoteMode::Viewing,
@@ -116,7 +106,6 @@ impl App {
             note_cursor_col: 0,
             note_lines: Vec::new(),
             side_index: 0,
-            palette_kind: PaletteKind::Omni,
             palette_query: String::new(),
             palette_items: Vec::new(),
             palette_selected: 0,
@@ -282,12 +271,19 @@ impl App {
     }
 
     pub fn visible_count(&self) -> usize {
-        self.fuzzy_filter_todos().len()
+        self.todos
+            .iter()
+            .filter(|t| t.archived == self.show_archived)
+            .count()
     }
 
     pub fn selected_todo_index(&self) -> Option<usize> {
-        let filtered = self.fuzzy_filter_todos();
-        filtered.get(self.selected_index).map(|(i, _)| *i)
+        self.todos
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.archived == self.show_archived)
+            .nth(self.selected_index)
+            .map(|(i, _)| i)
     }
 
     fn clamp_selection(&mut self) {
@@ -433,9 +429,8 @@ impl App {
         self.note_scroll += 1;
     }
 
-    pub fn open_palette(&mut self, kind: PaletteKind) {
+    pub fn open_palette(&mut self) {
         self.input_mode = InputMode::Palette;
-        self.palette_kind = kind;
         self.palette_query.clear();
         self.palette_selected = 0;
         self.refresh_palette();
@@ -546,62 +541,53 @@ impl App {
         let query = self.palette_query.trim();
         let mut items: Vec<PaletteItem> = Vec::new();
 
-        match self.palette_kind {
-            PaletteKind::Omni | PaletteKind::Notes => {
-                let candidates: Vec<String> = self
-                    .notes
-                    .iter()
-                    .map(|n| format!("{} {}", n.title, preview(&n.content)))
-                    .collect();
-                let matches = crate::fuzzy::filter(query, &candidates);
+        let candidates: Vec<String> = self
+            .notes
+            .iter()
+            .map(|n| format!("{} {}", n.title, preview(&n.content)))
+            .collect();
+        let matches = crate::fuzzy::filter(query, &candidates);
 
-                for (note_idx, m) in matches {
-                    let note = &self.notes[note_idx];
-                    let title_matches: Vec<usize> = if query.is_empty() {
-                        Vec::new()
-                    } else {
-                        crate::fuzzy::fuzzy_match(query, &note.title)
-                            .map(|fm| fm.indices)
-                            .unwrap_or_default()
-                    };
-                    items.push(PaletteItem {
-                        title: note.title.clone(),
-                        subtitle: preview(&note.content),
-                        icon: '📝',
-                        action: PaletteAction::OpenNote(note.id),
-                        score: m.score,
-                        matches: title_matches,
-                    });
-                }
-            }
+        for (note_idx, m) in matches {
+            let note = &self.notes[note_idx];
+            let title_matches: Vec<usize> = if query.is_empty() {
+                Vec::new()
+            } else {
+                crate::fuzzy::fuzzy_match(query, &note.title)
+                    .map(|fm| fm.indices)
+                    .unwrap_or_default()
+            };
+            items.push(PaletteItem {
+                title: note.title.clone(),
+                subtitle: preview(&note.content),
+                icon: '\u{1F4DD}',
+                action: PaletteAction::OpenNote(note.id),
+                score: m.score,
+                matches: title_matches,
+            });
         }
 
         if !query.is_empty() {
-            let create_score = 1000_i64; // Always keep create actions near the top.
-            if matches!(self.palette_kind, PaletteKind::Omni | PaletteKind::Notes) {
-                items.push(PaletteItem {
-                    title: format!("Create note: {}", query),
-                    subtitle: "Start a new note".to_string(),
-                    icon: '✨',
-                    action: PaletteAction::CreateNote(query.to_string()),
-                    score: create_score,
-                    matches: Vec::new(),
-                });
-            }
-            if matches!(self.palette_kind, PaletteKind::Omni) {
-                items.push(PaletteItem {
-                    title: format!("Create todo: {}", query),
-                    subtitle: "Add a new todo".to_string(),
-                    icon: '✅',
-                    action: PaletteAction::CreateTodo(query.to_string()),
-                    score: create_score - 1,
-                    matches: Vec::new(),
-                });
-            }
+            let create_score = 1000_i64;
+            items.push(PaletteItem {
+                title: format!("Create note: {}", query),
+                subtitle: "Start a new note".to_string(),
+                icon: '\u{2728}',
+                action: PaletteAction::CreateNote(query.to_string()),
+                score: create_score,
+                matches: Vec::new(),
+            });
+            items.push(PaletteItem {
+                title: format!("Create todo: {}", query),
+                subtitle: "Add a new todo".to_string(),
+                icon: '\u{2705}',
+                action: PaletteAction::CreateTodo(query.to_string()),
+                score: create_score - 1,
+                matches: Vec::new(),
+            });
         }
 
         if query.is_empty() {
-            // Stable order for empty query.
             items.sort_by_key(|item| match &item.action {
                 PaletteAction::OpenNote(id) => *id,
                 _ => u64::MAX,
@@ -616,14 +602,6 @@ impl App {
             .min(self.palette_items.len().saturating_sub(1));
     }
 
-    pub fn fuzzy_filter_todos(&self) -> Vec<(usize, crate::fuzzy::FuzzyMatch)> {
-        let q = self.search_query.trim();
-        let candidates: Vec<String> = self.todos.iter().map(|t| t.description.clone()).collect();
-        crate::fuzzy::filter(q, &candidates)
-            .into_iter()
-            .filter(|(idx, _)| self.show_archived == self.todos[*idx].archived)
-            .collect()
-    }
 }
 
 fn preview(content: &str) -> String {

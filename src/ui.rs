@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, NoteMode, PaletteKind, Panel, SideItem, View};
+use crate::app::{App, InputMode, NoteMode, Panel, SideItem, View};
 use crate::markdown;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -143,7 +143,13 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    let visible = app.fuzzy_filter_todos();
+    let visible: Vec<usize> = app
+        .todos
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.archived == app.show_archived)
+        .map(|(i, _)| i)
+        .collect();
 
     let border_color = if app.panel == Panel::Main {
         Color::Yellow
@@ -171,7 +177,7 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .enumerate()
         .skip(app.list_scroll)
-        .map(|(i, (todo_idx, fuzzy_match))| {
+        .map(|(i, todo_idx)| {
             let todo = &app.todos[*todo_idx];
             let is_selected = app.panel == Panel::Main && i == sel;
             let checkbox = if todo.done { "✓" } else { "○" };
@@ -191,21 +197,12 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
             ];
 
-            let highlighted = crate::fuzzy::highlight(&todo.description, &fuzzy_match.indices);
-            for (segment, is_match) in highlighted.segments {
-                let style = if todo.done {
-                    Style::default()
-                        .fg(if is_match {
-                            Color::Cyan
-                        } else {
-                            Color::DarkGray
-                        })
-                        .crossed_out()
-                } else {
-                    Style::default().fg(if is_match { Color::Cyan } else { Color::White })
-                };
-                spans.push(Span::styled(segment, style));
-            }
+            let desc_style = if todo.done {
+                Style::default().fg(Color::DarkGray).crossed_out()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            spans.push(Span::styled(todo.description.clone(), desc_style));
 
             spans.push(Span::styled(
                 format!("  {}", date),
@@ -260,20 +257,16 @@ fn render_list_empty(frame: &mut Frame, area: Rect, border_color: Color, app: &A
     ]);
     let [_, content_area, _] = vertical.areas(inner);
 
-    let message = if !app.search_query.is_empty() {
-        format!("No matches for '{}'", app.search_query)
-    } else if app.show_archived {
+    let message = if app.show_archived {
         "No archived todos".to_string()
     } else {
         "No todos yet".to_string()
     };
 
-    let sub = if !app.search_query.is_empty() {
-        "Press Esc to clear"
-    } else if app.show_archived {
+    let sub = if app.show_archived {
         ""
     } else {
-        "Press 'n' to add your first one"
+        "Press 'c' to add your first one"
     };
 
     let mut lines = vec![
@@ -464,10 +457,7 @@ fn render_palette(frame: &mut Frame, area: Rect, app: &App) {
     let popup = centered_rect(area, 80, 70);
     frame.render_widget(Clear, popup);
 
-    let title = match app.palette_kind {
-        PaletteKind::Omni => " Command Palette ",
-        PaletteKind::Notes => " Explore Notes ",
-    };
+    let title = " Command Palette ";
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -625,16 +615,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                     Span::raw("archived  "),
                     Span::styled("n ", Style::default().fg(Color::Green).bold()),
                     Span::raw("palette  "),
-                    Span::styled("e ", Style::default().fg(Color::Green).bold()),
-                    Span::raw("explore  "),
                     Span::styled("c ", Style::default().fg(Color::Green).bold()),
                     Span::raw("create  "),
                     Span::styled("d ", Style::default().fg(Color::Red).bold()),
                     Span::raw("delete  "),
                     Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
                     Span::raw("toggle  "),
-                    Span::styled("/ ", Style::default().fg(Color::Cyan).bold()),
-                    Span::raw("search  "),
                     Span::styled(
                         "\u{2191}/\u{2193} ",
                         Style::default().fg(Color::Cyan).bold(),
@@ -663,11 +649,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         _ => {
             let label = match app.input_mode {
                 InputMode::Editing => " EDIT: ",
-                InputMode::Searching => " FIND: ",
                 _ => " CREATE: ",
             };
             let hint = match app.input_mode {
-                InputMode::Adding => "Enter create  Esc save+quit",
+                InputMode::Adding => "Enter create  Esc cancel",
                 InputMode::Editing => "Enter/Esc save",
                 _ => "Enter save  Esc cancel",
             };
