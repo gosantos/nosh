@@ -1,4 +1,4 @@
-use chrono::Local;
+use chrono::{Duration, Local};
 use std::path::PathBuf;
 
 use crate::storage::{self, Note, Todo};
@@ -62,7 +62,7 @@ pub struct App {
     pub palette_query: String,
     pub palette_items: Vec<PaletteItem>,
     pub palette_selected: usize,
-    storage_path: PathBuf,
+    pub storage_path: PathBuf,
     notes_path: PathBuf,
 }
 
@@ -347,6 +347,21 @@ impl App {
             self.todos.remove(idx);
             storage::save(&self.storage_path, &self.todos);
             self.clamp_selection();
+        }
+    }
+
+    pub fn archive_old(&mut self) {
+        let threshold = Local::now().naive_local() - Duration::days(7);
+        let mut changed = false;
+        for todo in &mut self.todos {
+            if !todo.archived && todo.created_at < threshold {
+                todo.archived = true;
+                todo.done = true;
+                changed = true;
+            }
+        }
+        if changed {
+            storage::save(&self.storage_path, &self.todos);
         }
     }
 

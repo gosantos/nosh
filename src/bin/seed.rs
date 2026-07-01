@@ -423,15 +423,19 @@ fn main() {
         // add a random-ish minute offset
         dt = dt.with_minute((i * 17 % 60) as u32).unwrap();
 
-        let done = match i % 10 {
-            0 | 1 | 2 | 5 => true, // some done
-            9 => true,             // done
-            _ => false,            // pending
-        };
-
         let archived = match i % 13 {
             7 | 11 => true,
             _ => false,
+        };
+
+        let done = if archived {
+            true
+        } else {
+            match i % 10 {
+                0 | 1 | 2 | 5 => true, // some done
+                9 => true,             // done
+                _ => false,            // pending
+            }
         };
 
         todos.push(Todo {

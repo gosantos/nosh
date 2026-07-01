@@ -6,6 +6,7 @@ mod ui;
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use app::{App, InputMode, NoteMode, Panel, View};
@@ -389,19 +390,36 @@ fn run_tui() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let mut app = App::new(storage_path());
+    let app = Arc::new(Mutex::new(App::new(storage_path())));
     let tick_rate = Duration::from_millis(250);
     let mut last_tick = Instant::now();
 
-    while !app.should_quit {
-        terminal.draw(|f| ui::draw(f, &mut app))?;
+    {
+        let app = Arc::clone(&app);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(60));
+            let mut app = app.lock().unwrap();
+            app.archive_old();
+        });
+    }
 
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)? {
-            handle_event(&mut app)?;
-        }
-        if last_tick.elapsed() >= tick_rate {
-            last_tick = Instant::now();
+    loop {
+        let should_quit = {
+            let mut app = app.lock().unwrap();
+            terminal.draw(|f| ui::draw(f, &mut app))?;
+
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if event::poll(timeout)? {
+                handle_event(&mut app)?;
+            }
+            if last_tick.elapsed() >= tick_rate {
+                last_tick = Instant::now();
+            }
+            app.should_quit
+        };
+
+        if should_quit {
+            break;
         }
     }
 
