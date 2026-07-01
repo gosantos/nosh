@@ -2,6 +2,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Todo {
@@ -9,6 +10,14 @@ pub struct Todo {
     pub description: String,
     pub done: bool,
     pub created_at: NaiveDateTime,
+}
+
+static SEQUENCE: AtomicU16 = AtomicU16::new(0);
+
+pub fn next_id() -> u64 {
+    let ts = chrono::Utc::now().timestamp_millis() as u64;
+    let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed) as u64;
+    (ts << 10) | (seq % 1024)
 }
 
 pub fn load(path: &PathBuf) -> Vec<Todo> {

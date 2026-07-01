@@ -6,6 +6,7 @@ use crate::storage::{self, Todo};
 pub enum InputMode {
     Normal,
     Adding,
+    Editing,
 }
 
 pub struct App {
@@ -19,7 +20,8 @@ pub struct App {
 
 impl App {
     pub fn new(storage_path: PathBuf) -> Self {
-        let todos = storage::load(&storage_path);
+        let mut todos = storage::load(&storage_path);
+        todos.sort_by_key(|t| t.id);
         App {
             todos,
             input_mode: InputMode::Normal,
@@ -35,9 +37,8 @@ impl App {
         if desc.is_empty() {
             return;
         }
-        let next_id = self.todos.iter().map(|t| t.id).max().unwrap_or(0) + 1;
         self.todos.push(Todo {
-            id: next_id,
+            id: storage::next_id(),
             description: desc,
             done: false,
             created_at: Local::now().naive_local(),
@@ -45,6 +46,18 @@ impl App {
         self.input_buffer.clear();
         self.selected_index = self.todos.len().saturating_sub(1);
         storage::save(&self.storage_path, &self.todos);
+    }
+
+    pub fn edit_todo(&mut self) {
+        let desc = self.input_buffer.trim().to_string();
+        if desc.is_empty() {
+            return;
+        }
+        if let Some(todo) = self.todos.get_mut(self.selected_index) {
+            todo.description = desc;
+            storage::save(&self.storage_path, &self.todos);
+        }
+        self.input_buffer.clear();
     }
 
     pub fn toggle_done(&mut self) {

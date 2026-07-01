@@ -45,7 +45,7 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App) {
             };
             let prefix = if i == app.selected_index { ">" } else { " " };
             let number = Span::styled(
-                format!(" {:>3} ", todo.id),
+                format!(" {} ", todo.created_at.format("%m-%d %H:%M")),
                 Style::default().fg(Color::DarkGray),
             );
             let checkbox = Span::styled(
@@ -91,27 +91,35 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw("quit  "),
                 Span::styled("n ", Style::default().fg(Color::Green).bold()),
                 Span::raw("new  "),
+                Span::styled("e ", Style::default().fg(Color::Yellow).bold()),
+                Span::raw("edit  "),
                 Span::styled("d ", Style::default().fg(Color::Red).bold()),
                 Span::raw("delete  "),
                 Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
                 Span::raw("toggle  "),
-                Span::styled("↑/↓ ", Style::default().fg(Color::Cyan).bold()),
+                Span::styled("\u{2191}/\u{2193} ", Style::default().fg(Color::Cyan).bold()),
                 Span::raw("navigate"),
             ],
             Style::default(),
         ),
-        InputMode::Adding => (
-            vec![
-                Span::styled(" INPUT: ", Style::default().fg(Color::Green).bold()),
-                Span::raw(&app.input_buffer),
-                Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
-                Span::raw("save  "),
-                Span::styled("Esc ", Style::default().fg(Color::Red).bold()),
-                Span::raw("cancel"),
-            ],
-            Style::default(),
-        ),
+        InputMode::Adding | InputMode::Editing => {
+            let label = match app.input_mode {
+                InputMode::Editing => " EDIT: ",
+                _ => " INPUT: ",
+            };
+            (
+                vec![
+                    Span::styled(label, Style::default().fg(Color::Green).bold()),
+                    Span::raw(&app.input_buffer),
+                    Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
+                    Span::raw("save  "),
+                    Span::styled("Esc ", Style::default().fg(Color::Red).bold()),
+                    Span::raw("cancel"),
+                ],
+                Style::default(),
+            )
+        },
     };
 
     let footer = Block::default()
