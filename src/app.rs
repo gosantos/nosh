@@ -386,8 +386,7 @@ impl App {
             Some(SideItem::Note(..)) => {
                 self.view = View::Note;
                 self.panel = Panel::Main;
-                self.note_mode = NoteMode::Viewing;
-                self.note_scroll = 0;
+                self.start_edit_note();
             }
             _ => {}
         }

@@ -428,6 +428,16 @@ fn handle_event(app: &mut App) -> io::Result<()> {
             (InputMode::Normal, NoteMode::Viewing, Panel::Main, View::Note) => match key.code {
                 KeyCode::Char('q') => app.should_quit = true,
                 KeyCode::Char('i') | KeyCode::Char('e') => app.start_edit_note(),
+                KeyCode::Char('t') => { app.view = View::Todos; app.show_archived = false; app.selected_index = 0; }
+                KeyCode::Char('a') => { app.view = View::Todos; app.show_archived = true; app.selected_index = 0; }
+                KeyCode::Char('n') => app.new_note_inline(),
+                KeyCode::Char('c') => {
+                    app.view = View::Todos;
+                    app.show_archived = false;
+                    app.search_query.clear();
+                    app.input_mode = InputMode::Adding;
+                    app.input_buffer.clear();
+                }
                 KeyCode::Down | KeyCode::Char('j') => app.note_scroll_down(),
                 KeyCode::Up | KeyCode::Char('k') => app.note_scroll_up(),
                 KeyCode::Tab => app.panel = Panel::Sidebar,
@@ -436,17 +446,22 @@ fn handle_event(app: &mut App) -> io::Result<()> {
 
             (InputMode::Normal, _, Panel::Main, View::Todos) => match key.code {
                 KeyCode::Char('q') => app.should_quit = true,
-                KeyCode::Char('n') => {
+                KeyCode::Char('t') => { app.show_archived = false; app.selected_index = 0; }
+                KeyCode::Char('a') => { app.show_archived = true; app.selected_index = 0; }
+                KeyCode::Char('n') => app.new_note_inline(),
+                KeyCode::Char('c') => {
+                    app.show_archived = false;
+                    app.search_query.clear();
                     app.input_mode = InputMode::Adding;
                     app.input_buffer.clear();
                 }
-                KeyCode::Char('e') => {
+                KeyCode::Enter | KeyCode::Char('e') => {
                     if let Some(idx) = app.selected_todo_index() {
                         app.input_mode = InputMode::Editing;
                         app.input_buffer = app.todos[idx].description.clone();
                     }
                 }
-                KeyCode::Char('a') => app.archive_selected(),
+                KeyCode::Char('A') => app.archive_selected(),
                 KeyCode::Char('d') => app.delete_selected(),
                 KeyCode::Char(' ') => app.toggle_done(),
                 KeyCode::Char('/') => {
@@ -466,7 +481,17 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 KeyCode::Up | KeyCode::Char('k') => app.side_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.side_down(),
                 KeyCode::Enter => app.select_sidebar(),
+                KeyCode::Char('t') => { app.view = View::Todos; app.show_archived = false; app.selected_index = 0; app.panel = Panel::Main; }
+                KeyCode::Char('a') => { app.view = View::Todos; app.show_archived = true; app.selected_index = 0; app.panel = Panel::Main; }
                 KeyCode::Char('n') => app.new_note_inline(),
+                KeyCode::Char('c') => {
+                    app.view = View::Todos;
+                    app.show_archived = false;
+                    app.panel = Panel::Main;
+                    app.input_mode = InputMode::Adding;
+                    app.input_buffer.clear();
+                    app.search_query.clear();
+                }
                 KeyCode::Char('d') => app.delete_note_by_side_index(),
                 KeyCode::Tab | KeyCode::Esc => app.panel = Panel::Main,
                 _ => {}
@@ -475,10 +500,9 @@ fn handle_event(app: &mut App) -> io::Result<()> {
             (InputMode::Adding, _, _, _) => match key.code {
                 KeyCode::Enter => {
                     app.add_todo();
-                    app.input_mode = InputMode::Normal;
                 }
                 KeyCode::Esc => {
-                    app.input_buffer.clear();
+                    app.add_todo();
                     app.input_mode = InputMode::Normal;
                 }
                 KeyCode::Backspace => {
@@ -491,12 +515,8 @@ fn handle_event(app: &mut App) -> io::Result<()> {
             },
 
             (InputMode::Editing, _, _, _) => match key.code {
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Esc => {
                     app.edit_todo();
-                    app.input_mode = InputMode::Normal;
-                }
-                KeyCode::Esc => {
-                    app.input_buffer.clear();
                     app.input_mode = InputMode::Normal;
                 }
                 KeyCode::Backspace => {

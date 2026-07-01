@@ -37,7 +37,7 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
         (View::Note, NoteMode::Editing) => "Editing",
         (View::Note, _) => "Note",
         (View::Todos, _) if app.show_archived => "Archived",
-        _ => "Active",
+        _ => "Todos",
     };
     let total = app.todos.iter().filter(|t| t.archived == app.show_archived).count();
     let done = app
@@ -91,7 +91,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             let line = match item {
                 SideItem::Active(_) => Line::from(vec![
                     Span::styled(cursor, Style::default().fg(Color::Cyan)),
-                    Span::styled("📋 Active", style),
+                    Span::styled("📋 Todos", style),
                 ]),
                 SideItem::Archive(_) => Line::from(vec![
                     Span::styled(cursor, Style::default().fg(Color::Cyan)),
@@ -409,29 +409,29 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             vec![
                 Span::styled("  Esc ", Style::default().fg(Color::Red).bold()),
                 Span::raw("save  "),
-                Span::styled("\u{2191}/\u{2193} ", Style::default().fg(Color::Cyan).bold()),
+                Span::styled("\u{2191}/\u{2193}\u{2190}/\u{2192} ", Style::default().fg(Color::Cyan).bold()),
                 Span::raw("move  "),
                 Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
                 Span::raw("newline  "),
                 Span::styled("Backspace ", Style::default().fg(Color::Red).bold()),
-                Span::raw("delete"),
+                Span::raw("delete  "),
+                Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
+                Span::raw("save+panel"),
             ],
             Style::default(),
         ),
         (InputMode::Normal, _) => {
-            let focused = match app.panel {
-                Panel::Main => Span::styled(
-                    format!(
-                        "  focused: {} ",
-                        match app.view {
-                            View::Todos => "todos",
-                            View::Note => "note",
-                        }
-                    ),
+            let focused = match (&app.panel, &app.view) {
+                (Panel::Sidebar, _) => Span::styled(
+                    "  focused: sidebar ",
                     Style::default().fg(Color::Yellow),
                 ),
-                Panel::Sidebar => Span::styled(
-                    "  focused: sidebar ",
+                (Panel::Main, View::Note) => Span::styled(
+                    "  focused: note ",
+                    Style::default().fg(Color::Yellow),
+                ),
+                _ => Span::styled(
+                    "  focused: todos ",
                     Style::default().fg(Color::Yellow),
                 ),
             };
@@ -439,22 +439,24 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 vec![
                     Span::styled("  q ", Style::default().fg(Color::Red).bold()),
                     Span::raw("quit  "),
+                    Span::styled("t ", Style::default().fg(Color::Cyan).bold()),
+                    Span::raw("todos  "),
+                    Span::styled("a ", Style::default().fg(Color::Magenta).bold()),
+                    Span::raw("archived  "),
                     Span::styled("n ", Style::default().fg(Color::Green).bold()),
-                    Span::raw("new  "),
+                    Span::raw("note  "),
+                    Span::styled("c ", Style::default().fg(Color::Green).bold()),
+                    Span::raw("create  "),
                     Span::styled("e ", Style::default().fg(Color::Green).bold()),
                     Span::raw("edit  "),
                     Span::styled("d ", Style::default().fg(Color::Red).bold()),
                     Span::raw("delete  "),
                     Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
                     Span::raw("toggle  "),
-                    Span::styled("a ", Style::default().fg(Color::Magenta).bold()),
-                    Span::raw("archive  "),
                     Span::styled("/ ", Style::default().fg(Color::Cyan).bold()),
                     Span::raw("search  "),
                     Span::styled("\u{2191}/\u{2193} ", Style::default().fg(Color::Cyan).bold()),
                     Span::raw("nav  "),
-                    Span::styled("i ", Style::default().fg(Color::Green).bold()),
-                    Span::raw("insert  "),
                     Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
                     Span::raw("panel"),
                     focused,
@@ -466,17 +468,18 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             let label = match app.input_mode {
                 InputMode::Editing => " EDIT: ",
                 InputMode::Searching => " FIND: ",
-                _ => " INPUT: ",
+                _ => " ADD: ",
+            };
+            let hint = match app.input_mode {
+                InputMode::Adding => "Enter add  Esc save+quit",
+                InputMode::Editing => "Enter/Esc save",
+                _ => "Enter save  Esc cancel",
             };
             (
                 vec![
                     Span::styled(label, Style::default().fg(Color::Green).bold()),
                     Span::raw(&app.input_buffer),
-                    Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
-                    Span::raw("save  "),
-                    Span::styled("Esc ", Style::default().fg(Color::Red).bold()),
-                    Span::raw("cancel"),
+                    Span::styled(format!(" | {}", hint), Style::default().fg(Color::DarkGray)),
                 ],
                 Style::default(),
             )
