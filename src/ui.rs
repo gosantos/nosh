@@ -673,9 +673,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
                 Span::raw("panel"),
             ],
-                Style::default(),
-            )
-        }
+            Style::default(),
+        ),
         (InputMode::Palette, _) => (
             vec![
                 Span::styled(

@@ -88,12 +88,21 @@ enum NoteCommand {
     Delete { id: u64 },
 }
 
+fn data_dir() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if cwd.join(".nosh.json").exists() {
+        cwd
+    } else {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default())
+    }
+}
+
 fn storage_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".nosh.json")
+    data_dir().join(".nosh.json")
 }
 
 fn notes_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".nosh-notes.json")
+    data_dir().join(".nosh-notes.json")
 }
 
 fn open_editor(content: &str) -> io::Result<String> {
