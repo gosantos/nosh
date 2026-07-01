@@ -1,0 +1,123 @@
+use ratatui::{
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame,
+};
+
+use crate::app::{App, InputMode};
+
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let vertical = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(3),
+    ]);
+    let [title_area, list_area, footer_area] = vertical.areas(area);
+
+    render_title(frame, title_area);
+    render_list(frame, list_area, app);
+    render_footer(frame, footer_area, app);
+}
+
+fn render_title(frame: &mut Frame, area: Rect) {
+    let title = Block::default()
+        .title(" ✅ tui-todo ")
+        .title_style(Style::default().bold().fg(Color::Cyan))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    frame.render_widget(title, area);
+}
+
+fn render_list(frame: &mut Frame, area: Rect, app: &App) {
+    let items: Vec<ListItem> = app
+        .todos
+        .iter()
+        .enumerate()
+        .map(|(i, todo)| {
+            let checkbox = if todo.done { "[x]" } else { "[ ]" };
+            let style = if todo.done {
+                Style::default().fg(Color::DarkGray).crossed_out()
+            } else {
+                Style::default()
+            };
+            let prefix = if i == app.selected_index { ">" } else { " " };
+            let number = Span::styled(
+                format!(" {:>3} ", todo.id),
+                Style::default().fg(Color::DarkGray),
+            );
+            let checkbox = Span::styled(
+                format!("{} ", checkbox),
+                if todo.done {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::Yellow)
+                },
+            );
+            let text = Span::styled(&todo.description, style);
+            let line = Line::from(vec![
+                Span::styled(format!("{}", prefix), Style::default().fg(Color::Cyan)),
+                number,
+                checkbox,
+                text,
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Todos ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    frame.render_widget(list, area);
+}
+
+fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+    let (text, style) = match app.input_mode {
+        InputMode::Normal => (
+            vec![
+                Span::styled("  q ", Style::default().fg(Color::Red).bold()),
+                Span::raw("quit  "),
+                Span::styled("n ", Style::default().fg(Color::Green).bold()),
+                Span::raw("new  "),
+                Span::styled("d ", Style::default().fg(Color::Red).bold()),
+                Span::raw("delete  "),
+                Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
+                Span::raw("toggle  "),
+                Span::styled("↑/↓ ", Style::default().fg(Color::Cyan).bold()),
+                Span::raw("navigate"),
+            ],
+            Style::default(),
+        ),
+        InputMode::Adding => (
+            vec![
+                Span::styled(" INPUT: ", Style::default().fg(Color::Green).bold()),
+                Span::raw(&app.input_buffer),
+                Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
+                Span::raw("save  "),
+                Span::styled("Esc ", Style::default().fg(Color::Red).bold()),
+                Span::raw("cancel"),
+            ],
+            Style::default(),
+        ),
+    };
+
+    let footer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = footer.inner(area);
+    frame.render_widget(footer, area);
+    frame.render_widget(Paragraph::new(Line::from(text)).style(style), inner);
+}
