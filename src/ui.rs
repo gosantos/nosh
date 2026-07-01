@@ -649,41 +649,30 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             ],
             Style::default(),
         ),
-        (InputMode::Normal, _) => {
-            let focused = match (&app.panel, &app.view) {
-                (Panel::Sidebar, _) => {
-                    Span::styled("  focused: sidebar ", Style::default().fg(Color::Yellow))
-                }
-                (Panel::Main, View::Note) => {
-                    Span::styled("  focused: note ", Style::default().fg(Color::Yellow))
-                }
-                _ => Span::styled("  focused: todos ", Style::default().fg(Color::Yellow)),
-            };
-            (
-                vec![
-                    Span::styled("  q ", Style::default().fg(Color::Red).bold()),
-                    Span::raw("quit  "),
-                    Span::styled("t ", Style::default().fg(Color::Cyan).bold()),
-                    Span::raw("todos  "),
-                    Span::styled("a ", Style::default().fg(Color::Magenta).bold()),
-                    Span::raw("archived  "),
-                    Span::styled("n ", Style::default().fg(Color::Green).bold()),
-                    Span::raw("palette  "),
-                    Span::styled("c ", Style::default().fg(Color::Green).bold()),
-                    Span::raw("create  "),
-                    Span::styled("d ", Style::default().fg(Color::Red).bold()),
-                    Span::raw("delete  "),
-                    Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
-                    Span::raw("toggle  "),
-                    Span::styled(
-                        "\u{2191}/\u{2193} ",
-                        Style::default().fg(Color::Cyan).bold(),
-                    ),
-                    Span::raw("nav  "),
-                    Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
-                    Span::raw("panel"),
-                    focused,
-                ],
+        (InputMode::Normal, _) => (
+            vec![
+                Span::styled("  q ", Style::default().fg(Color::Red).bold()),
+                Span::raw("quit  "),
+                Span::styled("t ", Style::default().fg(Color::Cyan).bold()),
+                Span::raw("todos  "),
+                Span::styled("a ", Style::default().fg(Color::Magenta).bold()),
+                Span::raw("archived  "),
+                Span::styled("n ", Style::default().fg(Color::Green).bold()),
+                Span::raw("palette  "),
+                Span::styled("c ", Style::default().fg(Color::Green).bold()),
+                Span::raw("create  "),
+                Span::styled("d ", Style::default().fg(Color::Red).bold()),
+                Span::raw("delete  "),
+                Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
+                Span::raw("toggle  "),
+                Span::styled(
+                    "\u{2191}/\u{2193} ",
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::raw("nav  "),
+                Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
+                Span::raw("panel"),
+            ],
                 Style::default(),
             )
         }
