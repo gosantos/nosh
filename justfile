@@ -13,5 +13,5 @@ release: build
 check:
     cargo clippy -- -D warnings
 
-.fmt:
+fmt:
     cargo fmt
