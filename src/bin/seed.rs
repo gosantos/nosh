@@ -31,8 +31,8 @@ fn seed_id(base_ts: i64, seq: u64) -> u64 {
 }
 
 fn main() {
-    let notes_path = home().join(".tui-todo-notes.json");
-    let todos_path = home().join(".tui-todo.json");
+    let notes_path = home().join(".nosh-notes.json");
+    let todos_path = home().join(".nosh.json");
 
     // ── NOTES ──────────────────────────────────────────────────────
     let notes_data: Vec<(&str, &str, &str)> = vec![

@@ -63,7 +63,7 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
 
     let title = Paragraph::new(Line::from(vec![
         Span::styled(" ✅", Style::default().fg(Color::Green).bold()),
-        Span::styled(" tui-todo", Style::default().fg(Color::White).bold()),
+        Span::styled(" nosh", Style::default().fg(Color::White).bold()),
         Span::styled(format!("  [{}]", label), Style::default().fg(Color::Cyan)),
     ]))
     .block(

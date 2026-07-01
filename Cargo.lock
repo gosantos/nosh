@@ -623,6 +623,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nosh"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "crossterm",
+ "ratatui",
+ "ratatui-markdown",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1043,19 +1056,6 @@ name = "toml_write"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
-
-[[package]]
-name = "tui-todo"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "crossterm",
- "ratatui",
- "ratatui-markdown",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "typenum"

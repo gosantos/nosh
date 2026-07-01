@@ -22,7 +22,7 @@ use ratatui::Terminal;
 use storage::{Note, Todo};
 
 #[derive(Parser)]
-#[command(name = "tui-todo")]
+#[command(name = "nosh")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -94,16 +94,16 @@ enum NoteCommand {
 }
 
 fn storage_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".tui-todo.json")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".nosh.json")
 }
 
 fn notes_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".tui-todo-notes.json")
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".nosh-notes.json")
 }
 
 fn open_editor(content: &str) -> io::Result<String> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-    let tmp = std::env::temp_dir().join(format!("tui-todo-note-{}.md", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("nosh-note-{}.md", std::process::id()));
     std::fs::write(&tmp, content)?;
     let status = std::process::Command::new(&editor).arg(&tmp).status()?;
     let new_content = std::fs::read_to_string(&tmp)?;
