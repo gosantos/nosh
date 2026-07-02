@@ -31,7 +31,14 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    #[command(visible_alias = "ls")]
+    #[command(subcommand)]
+    Todos(TodosCommand),
+    #[command(subcommand)]
+    Notes(NotesCommand),
+}
+
+#[derive(clap::Subcommand)]
+enum TodosCommand {
     List {
         #[arg(short, long)]
         done: bool,
@@ -41,50 +48,45 @@ enum Command {
         ids: bool,
         #[arg(short, long)]
         archived: bool,
+        #[arg(long)]
+        today: bool,
+        #[arg(long)]
+        last_3_days: bool,
+        #[arg(long)]
+        last_7_days: bool,
+        #[arg(long)]
+        last_30_days: bool,
     },
-    #[command(visible_alias = "a")]
-    Add {
+    Create {
         description: String,
     },
-    #[command(visible_alias = "e")]
     Edit {
         id: u64,
         description: String,
     },
-    #[command(visible_alias = "do")]
-    Done {
+    Do {
         id: u64,
     },
-    #[command(visible_alias = "un")]
-    Undone {
+    Undo {
         id: u64,
     },
-    #[command(visible_alias = "rm")]
     Delete {
         id: u64,
     },
     Archive {
         id: u64,
     },
-    #[command(visible_alias = "ua")]
     Unarchive {
         id: u64,
     },
-    #[command(subcommand)]
-    Note(NoteCommand),
 }
 
 #[derive(clap::Subcommand)]
-enum NoteCommand {
-    #[command(visible_alias = "ls")]
+enum NotesCommand {
     List,
-    #[command(visible_alias = "a")]
-    New { title: String },
-    #[command(visible_alias = "e")]
+    Create { title: String },
     Edit { id: u64 },
-    #[command(alias = "show")]
     View { id: u64 },
-    #[command(visible_alias = "rm")]
     Delete { id: u64 },
 }
 
@@ -145,32 +147,68 @@ fn main() -> io::Result<()> {
 
 fn run_cli(cmd: Command) {
     match cmd {
-        Command::List {
+        Command::Todos(todos_cmd) => run_todos_cmd(todos_cmd),
+        Command::Notes(notes_cmd) => run_notes_cmd(notes_cmd),
+    }
+}
+
+fn run_todos_cmd(cmd: TodosCommand) {
+    match cmd {
+        TodosCommand::List {
             done,
             pending,
             ids,
             archived,
-        } => list_todos(done, pending, ids, archived),
-        Command::Add { description } => add_todo(&description),
-        Command::Edit { id, description } => edit_todo(id, &description),
-        Command::Done { id } => mark_done(id),
-        Command::Undone { id } => mark_undone(id),
-        Command::Delete { id } => delete_todo(id),
-        Command::Archive { id } => archive_todo(id),
-        Command::Unarchive { id } => unarchive_todo(id),
-        Command::Note(note_cmd) => run_note_cmd(note_cmd),
+            today,
+            last_3_days,
+            last_7_days,
+            last_30_days,
+        } => list_todos(done, pending, ids, archived, today, last_3_days, last_7_days, last_30_days),
+        TodosCommand::Create { description } => add_todo(&description),
+        TodosCommand::Edit { id, description } => edit_todo(id, &description),
+        TodosCommand::Do { id } => mark_done(id),
+        TodosCommand::Undo { id } => mark_undone(id),
+        TodosCommand::Delete { id } => delete_todo(id),
+        TodosCommand::Archive { id } => archive_todo(id),
+        TodosCommand::Unarchive { id } => unarchive_todo(id),
     }
 }
 
-fn list_todos(done: bool, pending: bool, ids: bool, archived: bool) {
+fn list_todos(
+    done: bool,
+    pending: bool,
+    ids: bool,
+    archived: bool,
+    today: bool,
+    last_3_days: bool,
+    last_7_days: bool,
+    last_30_days: bool,
+) {
     let path = storage_path();
     let mut todos = storage::load(&path);
     todos.sort_by_key(|t| t.id);
     let show_done = done || (!done && !pending);
     let show_pending = pending || (!done && !pending);
+    let now = Local::now().naive_local();
     let filtered: Vec<_> = todos
         .iter()
-        .filter(|t| t.archived == archived && ((show_done && t.done) || (show_pending && !t.done)))
+        .filter(|t| {
+            t.archived == archived
+                && ((show_done && t.done) || (show_pending && !t.done))
+        })
+        .filter(|t| {
+            if today {
+                t.created_at.date() == now.date()
+            } else if last_3_days {
+                t.created_at >= now - chrono::Duration::days(3)
+            } else if last_7_days {
+                t.created_at >= now - chrono::Duration::days(7)
+            } else if last_30_days {
+                t.created_at >= now - chrono::Duration::days(30)
+            } else {
+                true
+            }
+        })
         .collect();
     if filtered.is_empty() {
         println!("No todos found.");
@@ -309,10 +347,10 @@ fn unarchive_todo(id: u64) {
     }
 }
 
-fn run_note_cmd(cmd: NoteCommand) {
+fn run_notes_cmd(cmd: NotesCommand) {
     let path = notes_path();
     match cmd {
-        NoteCommand::List => {
+        NotesCommand::List => {
             let notes = storage::load_notes(&path);
             if notes.is_empty() {
                 println!("No notes found.");
@@ -327,7 +365,7 @@ fn run_note_cmd(cmd: NoteCommand) {
                 );
             }
         }
-        NoteCommand::New { title } => {
+        NotesCommand::Create { title } => {
             let content = match open_editor("") {
                 Ok(c) => c,
                 Err(e) => {
@@ -348,7 +386,7 @@ fn run_note_cmd(cmd: NoteCommand) {
             storage::save_notes(&path, &notes);
             println!("Created note");
         }
-        NoteCommand::Edit { id } => {
+        NotesCommand::Edit { id } => {
             let mut notes = storage::load_notes(&path);
             match notes.iter_mut().find(|n| n.id == id) {
                 Some(note) => {
@@ -371,7 +409,7 @@ fn run_note_cmd(cmd: NoteCommand) {
                 }
             }
         }
-        NoteCommand::View { id } => {
+        NotesCommand::View { id } => {
             let notes = storage::load_notes(&path);
             match notes.iter().find(|n| n.id == id) {
                 Some(note) => print!("{}", note.content),
@@ -381,7 +419,7 @@ fn run_note_cmd(cmd: NoteCommand) {
                 }
             }
         }
-        NoteCommand::Delete { id } => {
+        NotesCommand::Delete { id } => {
             let mut notes = storage::load_notes(&path);
             let len_before = notes.len();
             notes.retain(|n| n.id != id);
@@ -510,7 +548,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.input_mode = InputMode::Adding;
                     app.input_buffer.clear();
                 }
-                KeyCode::Enter | KeyCode::Char('e') => {
+                KeyCode::Char('e') => {
                     if let Some(idx) = app.selected_todo_index() {
                         app.input_mode = InputMode::Editing;
                         app.input_buffer = app.todos[idx].description.clone();
