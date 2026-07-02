@@ -278,12 +278,17 @@ impl App {
     }
 
     pub fn selected_todo_index(&self) -> Option<usize> {
-        self.todos
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| t.archived == self.show_archived)
-            .nth(self.selected_index)
-            .map(|(i, _)| i)
+        let groups = self.grouped_todos();
+        let mut count = 0;
+        for (_, indices) in &groups {
+            for &idx in indices {
+                if count == self.selected_index {
+                    return Some(idx);
+                }
+                count += 1;
+            }
+        }
+        None
     }
 
     fn clamp_selection(&mut self) {

@@ -661,6 +661,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw("palette  "),
                 Span::styled("c ", Style::default().fg(Color::Green).bold()),
                 Span::raw("create  "),
+                Span::styled("e ", Style::default().fg(Color::Blue).bold()),
+                Span::raw("edit  "),
                 Span::styled("d ", Style::default().fg(Color::Red).bold()),
                 Span::raw("delete  "),
                 Span::styled("space ", Style::default().fg(Color::Yellow).bold()),

@@ -510,7 +510,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.input_mode = InputMode::Adding;
                     app.input_buffer.clear();
                 }
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Char('e') => {
                     if let Some(idx) = app.selected_todo_index() {
                         app.input_mode = InputMode::Editing;
                         app.input_buffer = app.todos[idx].description.clone();
