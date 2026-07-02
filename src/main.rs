@@ -1,4 +1,5 @@
 mod app;
+mod calendar;
 mod fuzzy;
 mod markdown;
 mod storage;
@@ -10,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use app::{App, InputMode, NoteMode, Panel, View};
-use chrono::Local;
+use chrono::{Datelike, Local, NaiveDate};
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
@@ -59,6 +60,8 @@ enum TodosCommand {
     },
     Create {
         description: String,
+        #[arg(long)]
+        due: Option<String>,
     },
     Edit {
         id: u64,
@@ -164,7 +167,7 @@ fn run_todos_cmd(cmd: TodosCommand) {
             last_7_days,
             last_30_days,
         } => list_todos(done, pending, ids, archived, today, last_3_days, last_7_days, last_30_days),
-        TodosCommand::Create { description } => add_todo(&description),
+        TodosCommand::Create { description, due } => add_todo(&description, due.as_deref()),
         TodosCommand::Edit { id, description } => edit_todo(id, &description),
         TodosCommand::Do { id } => mark_done(id),
         TodosCommand::Undo { id } => mark_undone(id),
@@ -216,28 +219,35 @@ fn list_todos(
     }
     for t in filtered {
         let status = if t.done { "[x]" } else { "[ ]" };
+        let due = match t.due_date {
+            Some(d) => format!("  due:{}", d.format("%Y-%m-%d")),
+            None => String::new(),
+        };
         if ids {
             println!(
-                "{}  {:>16}  {}  {}",
+                "{}  {:>16}  {}  {}{}",
                 status,
                 t.id,
                 t.created_at.format("%m-%d %H:%M"),
-                t.description
+                t.description,
+                due
             );
         } else {
             println!(
-                "{}  {}  {}",
+                "{}  {}  {}{}",
                 status,
                 t.created_at.format("%m-%d %H:%M"),
-                t.description
+                t.description,
+                due
             );
         }
     }
 }
 
-fn add_todo(description: &str) {
+fn add_todo(description: &str, due_str: Option<&str>) {
     let path = storage_path();
     let mut todos = storage::load(&path);
+    let due_date = due_str.and_then(parse_due_date);
     todos.push(Todo {
         id: storage::next_id(),
         description: description.to_string(),
@@ -245,9 +255,54 @@ fn add_todo(description: &str) {
         archived: false,
         created_at: Local::now().naive_local(),
         completed_at: None,
+        due_date,
     });
     storage::save(&path, &todos);
-    println!("Added todo");
+    match due_date {
+        Some(d) => println!("Added todo (due: {})", d.format("%Y-%m-%d")),
+        None => println!("Added todo"),
+    }
+}
+
+fn parse_due_date(input: &str) -> Option<NaiveDate> {
+    let today = Local::now().naive_local().date();
+    match input.to_lowercase().as_str() {
+        "today" => Some(today),
+        "tomorrow" => Some(today + chrono::Duration::days(1)),
+        "friday" | "fri" | "end-of-week" | "eow" => {
+            let days_until_friday = match today.weekday() {
+                chrono::Weekday::Mon => 4,
+                chrono::Weekday::Tue => 3,
+                chrono::Weekday::Wed => 2,
+                chrono::Weekday::Thu => 1,
+                chrono::Weekday::Fri => 0,
+                chrono::Weekday::Sat => 6,
+                chrono::Weekday::Sun => 5,
+            };
+            Some(today + chrono::Duration::days(days_until_friday))
+        }
+        "next-friday" | "next-week" | "nw" => {
+            let days_until_friday = match today.weekday() {
+                chrono::Weekday::Mon => 4,
+                chrono::Weekday::Tue => 3,
+                chrono::Weekday::Wed => 2,
+                chrono::Weekday::Thu => 1,
+                chrono::Weekday::Fri => 7,
+                chrono::Weekday::Sat => 13,
+                chrono::Weekday::Sun => 12,
+            };
+            Some(today + chrono::Duration::days(days_until_friday))
+        }
+        "30d" | "30days" | "month" => Some(today + chrono::Duration::days(30)),
+        other => {
+            if let Ok(d) = NaiveDate::parse_from_str(other, "%Y-%m-%d") {
+                Some(d)
+            } else {
+                eprintln!("Invalid due date: '{}'. Use today, tomorrow, friday, next-week, 30d, or YYYY-MM-DD", input);
+                None
+            }
+        }
+    }
 }
 
 fn edit_todo(id: u64, description: &str) {
@@ -482,6 +537,10 @@ fn handle_event(app: &mut App) -> io::Result<()> {
             return Ok(());
         }
 
+        if app.modal.is_some() {
+            return handle_todo_form_event(app, key.code);
+        }
+
         match (&app.input_mode, &app.note_mode, &app.panel, &app.view) {
             (InputMode::Normal, NoteMode::Editing, Panel::Main, View::Note) => match key.code {
                 KeyCode::Esc => {
@@ -523,8 +582,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 KeyCode::Char('c') => {
                     app.view = View::Todos;
                     app.show_archived = false;
-                    app.input_mode = InputMode::Adding;
-                    app.input_buffer.clear();
+                    app.open_todo_form(None);
                 }
                 KeyCode::Down | KeyCode::Char('j') => app.note_scroll_down(),
                 KeyCode::Up | KeyCode::Char('k') => app.note_scroll_up(),
@@ -545,16 +603,21 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 KeyCode::Char('n') => app.open_palette(),
                 KeyCode::Char('c') => {
                     app.show_archived = false;
-                    app.input_mode = InputMode::Adding;
-                    app.input_buffer.clear();
+                    app.open_todo_form(None);
                 }
                 KeyCode::Char('e') => {
                     if let Some(idx) = app.selected_todo_index() {
-                        app.input_mode = InputMode::Editing;
-                        app.input_buffer = app.todos[idx].description.clone();
+                        let todo = app.todos[idx].clone();
+                        app.open_todo_form(Some(&todo));
                     }
                 }
                 KeyCode::Char('A') => app.archive_selected(),
+                KeyCode::Char('D') => {
+                    if let Some(idx) = app.selected_todo_index() {
+                        let todo = app.todos[idx].clone();
+                        app.open_todo_form(Some(&todo));
+                    }
+                }
                 KeyCode::Char('d') => app.delete_selected(),
                 KeyCode::Char(' ') => app.toggle_done(),
                 KeyCode::Up | KeyCode::Char('k') => app.move_up(),
@@ -586,43 +649,10 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.view = View::Todos;
                     app.show_archived = false;
                     app.panel = Panel::Main;
-                    app.input_mode = InputMode::Adding;
-                    app.input_buffer.clear();
+                    app.open_todo_form(None);
                 }
                 KeyCode::Char('d') => app.delete_note_by_side_index(),
                 KeyCode::Tab | KeyCode::Esc => app.panel = Panel::Main,
-                _ => {}
-            },
-
-            (InputMode::Adding, _, _, _) => match key.code {
-                KeyCode::Enter => {
-                    app.add_todo();
-                    app.input_mode = InputMode::Normal;
-                }
-                KeyCode::Esc => {
-                    app.input_buffer.clear();
-                    app.input_mode = InputMode::Normal;
-                }
-                KeyCode::Backspace => {
-                    app.input_buffer.pop();
-                }
-                KeyCode::Char(c) => {
-                    app.input_buffer.push(c);
-                }
-                _ => {}
-            },
-
-            (InputMode::Editing, _, _, _) => match key.code {
-                KeyCode::Enter | KeyCode::Esc => {
-                    app.edit_todo();
-                    app.input_mode = InputMode::Normal;
-                }
-                KeyCode::Backspace => {
-                    app.input_buffer.pop();
-                }
-                KeyCode::Char(c) => {
-                    app.input_buffer.push(c);
-                }
                 _ => {}
             },
 
@@ -636,6 +666,52 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 _ => {}
             },
         }
+    }
+    Ok(())
+}
+
+fn handle_todo_form_event(app: &mut App, code: KeyCode) -> io::Result<()> {
+    match code {
+        KeyCode::Esc => app.close_todo_form(),
+        KeyCode::Tab | KeyCode::BackTab => app.todo_form_toggle_focus(),
+        KeyCode::Enter => {
+            if app.is_form_focus_calendar() {
+                app.confirm_todo_form();
+            } else {
+                app.todo_form_toggle_focus();
+            }
+        }
+        KeyCode::Backspace => {
+            if app.is_form_focus_description() {
+                app.todo_form_backspace();
+            } else {
+                app.calendar_clear();
+            }
+        }
+        KeyCode::Char(c) => {
+            if app.is_form_focus_description() {
+                app.todo_form_type_char(c);
+            } else {
+                match c {
+                    'h' => app.calendar_move_left(),
+                    'j' => app.calendar_move_down(),
+                    'k' => app.calendar_move_up(),
+                    'l' => app.calendar_move_right(),
+                    't' => app.calendar_jump_today(),
+                    'w' => app.calendar_jump_end_of_week(),
+                    'n' => app.calendar_jump_next_week(),
+                    'm' => app.calendar_jump_30_days(),
+                    '<' => app.calendar_prev_month(),
+                    '>' => app.calendar_next_month(),
+                    _ => {}
+                }
+            }
+        }
+        KeyCode::Left => app.calendar_move_left(),
+        KeyCode::Right => app.calendar_move_right(),
+        KeyCode::Up => app.calendar_move_up(),
+        KeyCode::Down => app.calendar_move_down(),
+        _ => {}
     }
     Ok(())
 }

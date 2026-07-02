@@ -1,12 +1,11 @@
-use chrono::{Duration, Local};
+use chrono::{Duration, Local, NaiveDate};
 use std::path::PathBuf;
 
+use crate::calendar::CalendarState;
 use crate::storage::{self, Note, Todo};
 
 pub enum InputMode {
     Normal,
-    Adding,
-    Editing,
     Palette,
 }
 
@@ -23,6 +22,20 @@ pub struct PaletteItem {
     pub action: PaletteAction,
     pub score: i64,
     pub matches: Vec<usize>,
+}
+
+pub enum TodoFormFocus {
+    Description,
+    Calendar,
+}
+
+pub enum Modal {
+    TodoForm {
+        input_buffer: String,
+        calendar_state: CalendarState,
+        focus: TodoFormFocus,
+        editing_todo_index: Option<usize>,
+    },
 }
 
 pub enum NoteMode {
@@ -46,7 +59,6 @@ pub struct App {
     pub todos: Vec<Todo>,
     pub notes: Vec<Note>,
     pub input_mode: InputMode,
-    pub input_buffer: String,
     pub selected_index: usize,
     pub should_quit: bool,
     pub show_archived: bool,
@@ -64,6 +76,7 @@ pub struct App {
     pub palette_selected: usize,
     pub storage_path: PathBuf,
     notes_path: PathBuf,
+    pub modal: Option<Modal>,
 }
 
 fn side_items(view: &View, show_archived: bool, notes: &[Note]) -> Vec<SideItem> {
@@ -93,7 +106,6 @@ impl App {
             todos,
             notes,
             input_mode: InputMode::Normal,
-            input_buffer: String::new(),
             selected_index: 0,
             should_quit: false,
             show_archived: false,
@@ -111,6 +123,7 @@ impl App {
             palette_selected: 0,
             storage_path,
             notes_path,
+            modal: None,
         }
     }
 
@@ -300,34 +313,122 @@ impl App {
         }
     }
 
-    pub fn add_todo(&mut self) {
-        let desc = self.input_buffer.trim().to_string();
-        if desc.is_empty() {
-            return;
-        }
+    pub fn push_todo(&mut self, description: String, due_date: Option<NaiveDate>) {
         self.todos.push(Todo {
             id: storage::next_id(),
-            description: desc,
+            description,
             done: false,
             archived: false,
             created_at: Local::now().naive_local(),
             completed_at: None,
+            due_date,
         });
-        self.input_buffer.clear();
         self.selected_index = self.visible_count().saturating_sub(1);
         storage::save(&self.storage_path, &self.todos);
     }
 
-    pub fn edit_todo(&mut self) {
-        let desc = self.input_buffer.trim().to_string();
+    pub fn open_todo_form(&mut self, prefill: Option<&Todo>) {
+        let (buffer, due_date, editing_idx) = match prefill {
+            Some(t) => {
+                let idx = self.todos.iter().position(|x| x.id == t.id);
+                (t.description.clone(), t.due_date, idx)
+            }
+            None => (String::new(), None, None),
+        };
+        self.modal = Some(Modal::TodoForm {
+            input_buffer: buffer,
+            calendar_state: CalendarState::new(due_date),
+            focus: TodoFormFocus::Description,
+            editing_todo_index: editing_idx,
+        });
+    }
+
+    pub fn close_todo_form(&mut self) {
+        self.modal = None;
+    }
+
+    pub fn confirm_todo_form(&mut self) {
+        if let Some(Modal::TodoForm { ref mut calendar_state, .. }) = self.modal {
+            calendar_state.confirm();
+        }
+        let (desc, due_date, editing_idx) = match &self.modal {
+            Some(Modal::TodoForm {
+                input_buffer,
+                calendar_state,
+                editing_todo_index,
+                ..
+            }) => (
+                input_buffer.trim().to_string(),
+                calendar_state.confirmed,
+                *editing_todo_index,
+            ),
+            _ => return,
+        };
         if desc.is_empty() {
             return;
         }
-        if let Some(idx) = self.selected_todo_index() {
+        if let Some(idx) = editing_idx {
             self.todos[idx].description = desc;
-            storage::save(&self.storage_path, &self.todos);
+            self.todos[idx].due_date = due_date;
+        } else {
+            self.push_todo(desc, due_date);
         }
-        self.input_buffer.clear();
+        self.modal = None;
+    }
+
+    pub fn todo_form_type_char(&mut self, c: char) {
+        if let Some(Modal::TodoForm { ref mut input_buffer, .. }) = self.modal {
+            input_buffer.push(c);
+        }
+    }
+
+    pub fn todo_form_backspace(&mut self) {
+        if let Some(Modal::TodoForm { ref mut input_buffer, .. }) = self.modal {
+            input_buffer.pop();
+        }
+    }
+
+    pub fn todo_form_toggle_focus(&mut self) {
+        if let Some(Modal::TodoForm { ref mut focus, .. }) = self.modal {
+            *focus = match focus {
+                TodoFormFocus::Description => TodoFormFocus::Calendar,
+                TodoFormFocus::Calendar => TodoFormFocus::Description,
+            };
+        }
+    }
+
+    fn with_calendar(&mut self, f: impl FnOnce(&mut CalendarState)) {
+        if let Some(Modal::TodoForm { ref mut calendar_state, .. }) = self.modal {
+            f(calendar_state);
+        }
+    }
+
+    pub fn calendar_move_left(&mut self) { self.with_calendar(|s| s.move_left()); }
+    pub fn calendar_move_right(&mut self) { self.with_calendar(|s| s.move_right()); }
+    pub fn calendar_move_up(&mut self) { self.with_calendar(|s| s.move_up()); }
+    pub fn calendar_move_down(&mut self) { self.with_calendar(|s| s.move_down()); }
+    pub fn calendar_next_month(&mut self) { self.with_calendar(|s| s.next_month()); }
+    pub fn calendar_prev_month(&mut self) { self.with_calendar(|s| s.prev_month()); }
+    pub fn calendar_clear(&mut self) { self.with_calendar(|s| s.clear_selection()); }
+    pub fn calendar_jump_today(&mut self) { self.with_calendar(|s| s.jump_today()); }
+    pub fn calendar_jump_end_of_week(&mut self) { self.with_calendar(|s| s.jump_end_of_week()); }
+    pub fn calendar_jump_next_week(&mut self) {
+        self.with_calendar(|s| s.jump_next_week());
+    }
+    pub fn calendar_jump_30_days(&mut self) { self.with_calendar(|s| s.jump_30_days()); }
+
+    pub fn is_form_focus_description(&self) -> bool {
+        matches!(
+            self.modal,
+            Some(Modal::TodoForm { focus: TodoFormFocus::Description, .. })
+        )
+    }
+
+    pub fn is_form_focus_calendar(&self) -> bool {
+        matches!(
+            self.modal,
+            Some(Modal::TodoForm { focus: TodoFormFocus::Calendar, .. })
+        )
     }
 
     pub fn toggle_done(&mut self) {
@@ -396,7 +497,7 @@ impl App {
             let date = if self.show_archived {
                 todo.completed_at.unwrap_or(todo.created_at).date()
             } else {
-                todo.created_at.date()
+                todo.due_date.unwrap_or(todo.created_at.date())
             };
             groups.entry(date).or_default().push(i);
         }
@@ -582,16 +683,7 @@ impl App {
                 self.close_palette();
                 let desc = desc.trim().to_string();
                 if !desc.is_empty() {
-                    self.todos.push(Todo {
-                        id: storage::next_id(),
-                        description: desc,
-                        done: false,
-                        archived: false,
-                        created_at: Local::now().naive_local(),
-                        completed_at: None,
-                    });
-                    self.todos.sort_by_key(|t| t.id);
-                    storage::save(&self.storage_path, &self.todos);
+                    self.push_todo(desc, None);
                 }
                 self.view = View::Todos;
                 self.show_archived = false;

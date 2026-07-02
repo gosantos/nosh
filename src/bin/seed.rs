@@ -11,6 +11,8 @@ struct Todo {
     #[serde(default)]
     archived: bool,
     created_at: NaiveDateTime,
+    #[serde(default)]
+    due_date: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -438,12 +440,21 @@ fn main() {
             }
         };
 
+        let due_date = if i % 7 == 0 {
+            Some(dt.date() + chrono::Duration::days(((i * 3) % 14 + 1) as i64))
+        } else if i % 11 == 0 {
+            Some(dt.date())
+        } else {
+            None
+        };
+
         todos.push(Todo {
             id: seed_id(dt.and_utc().timestamp_millis(), seq),
             description: desc.to_string(),
             done,
             archived,
             created_at: dt,
+            due_date,
         });
         seq += 1;
     }

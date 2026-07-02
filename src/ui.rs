@@ -6,7 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, NoteMode, Panel, SideItem, View};
+use crate::app::{App, InputMode, Modal, NoteMode, Panel, SideItem, TodoFormFocus, View};
+use crate::calendar;
 use crate::markdown;
 
 enum DisplayItem {
@@ -40,6 +41,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if matches!(app.input_mode, InputMode::Palette) {
         render_palette(frame, area, app);
+    }
+
+    if let Some(Modal::TodoForm {
+        ref input_buffer,
+        ref calendar_state,
+        ref focus,
+        ref editing_todo_index,
+    }) = app.modal
+    {
+        render_todo_form(frame, area, input_buffer, calendar_state, focus, editing_todo_index.is_some());
     }
 }
 
@@ -245,6 +256,21 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(Color::White)
                 };
                 spans.push(Span::styled(todo.description.clone(), desc_style));
+
+                if let Some(due) = todo.due_date {
+                    let today = chrono::Local::now().naive_local().date();
+                    let (due_text, due_color) = if due == today {
+                        ("[today]".to_string(), Color::Yellow)
+                    } else if due < today && !todo.done {
+                        (format!("[due {}]", due.format("%m-%d")), Color::Red)
+                    } else {
+                        (format!("[{}]", due.format("%a %b %d")), Color::Cyan)
+                    };
+                    spans.push(Span::styled(
+                        format!("  {}", due_text),
+                        Style::default().fg(due_color),
+                    ));
+                }
 
                 spans.push(Span::styled(
                     format!("  {}", date),
@@ -507,6 +533,95 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn render_todo_form(
+    frame: &mut Frame,
+    area: Rect,
+    input_buffer: &str,
+    calendar_state: &crate::calendar::CalendarState,
+    focus: &TodoFormFocus,
+    is_edit: bool,
+) {
+    let grid_rows = calendar::grid_rows(calendar_state.view_year, calendar_state.view_month);
+    let popup_w = 40u16;
+    let popup_h = (9 + grid_rows as u16).min(area.height.saturating_sub(2));
+    let popup = Rect::new(
+        area.x + (area.width.saturating_sub(popup_w)) / 2,
+        area.y + (area.height.saturating_sub(popup_h)) / 2,
+        popup_w,
+        popup_h,
+    );
+
+    frame.render_widget(Clear, popup);
+
+    let selected_hint = calendar_state
+        .selected
+        .map(|d| format!("[{}]", d.format("%a %b %d")))
+        .unwrap_or_default();
+    let label = if is_edit { "Edit" } else { "New" };
+    let title = if selected_hint.is_empty() {
+        format!(" {} ", label)
+    } else {
+        format!(" {}  {}", label, selected_hint)
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(title, Style::default().fg(Color::White)))
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(block.clone(), popup);
+
+    let inner = block.inner(popup);
+    let layout = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ]);
+    let [_, input_area, _, month_area, day_area, grid_area, _, foot_area] = layout.areas(inner);
+
+    let is_input = matches!(focus, TodoFormFocus::Description);
+    let prefix = if is_input { "▸ " } else { "  " };
+    let cursor = if is_input { "▎" } else { "" };
+    let desc_text = if input_buffer.is_empty() && is_input {
+        Span::styled("description", Style::default().fg(Color::DarkGray))
+    } else if input_buffer.is_empty() {
+        Span::raw("")
+    } else {
+        Span::raw(input_buffer)
+    };
+    let input_text = Line::from(vec![
+        Span::styled(prefix, Style::default().fg(Color::Cyan)),
+        desc_text,
+        Span::styled(cursor, Style::default().fg(Color::Yellow)),
+    ]);
+    frame.render_widget(Paragraph::new(input_text), input_area);
+
+    let month_name = calendar::month_name_str(calendar_state.view_month);
+    let month_text = format!("{} {}", month_name, calendar_state.view_year);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(month_text, Style::default().fg(Color::White))]))
+            .alignment(Alignment::Center),
+        month_area,
+    );
+
+    calendar::render_day_header(frame, day_area);
+    calendar::render_grid_compact(frame, grid_area, calendar_state, focus);
+
+    let hint = match focus {
+        TodoFormFocus::Description => "Tab:date  Enter:save  Esc:cancel",
+        TodoFormFocus::Calendar => "hjkl:nav  t:today  w:eow  n:+1w  m:+30d  <>:month  Bsp:clear",
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(hint, Style::default().fg(Color::DarkGray))]))
+            .alignment(Alignment::Center),
+        foot_area,
+    );
+}
+
 fn render_palette(frame: &mut Frame, area: Rect, app: &App) {
     let popup = centered_rect(area, 80, 70);
     frame.render_widget(Clear, popup);
@@ -663,6 +778,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw("create  "),
                 Span::styled("e ", Style::default().fg(Color::Blue).bold()),
                 Span::raw("edit  "),
+                Span::styled("D ", Style::default().fg(Color::Yellow).bold()),
+                Span::raw("due date  "),
                 Span::styled("d ", Style::default().fg(Color::Red).bold()),
                 Span::raw("delete  "),
                 Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
@@ -690,25 +807,6 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             ],
             Style::default(),
         ),
-        _ => {
-            let label = match app.input_mode {
-                InputMode::Editing => " EDIT: ",
-                _ => " CREATE: ",
-            };
-            let hint = match app.input_mode {
-                InputMode::Adding => "Enter create  Esc cancel",
-                InputMode::Editing => "Enter/Esc save",
-                _ => "Enter save  Esc cancel",
-            };
-            (
-                vec![
-                    Span::styled(label, Style::default().fg(Color::Green).bold()),
-                    Span::raw(&app.input_buffer),
-                    Span::styled(format!(" | {}", hint), Style::default().fg(Color::DarkGray)),
-                ],
-                Style::default(),
-            )
-        }
     };
 
     let footer = Block::default()
