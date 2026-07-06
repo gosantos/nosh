@@ -23,7 +23,7 @@ use ratatui::Terminal;
 use storage::{Note, Todo};
 
 #[derive(Parser)]
-#[command(name = "nosh")]
+#[command(name = "nosh", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
