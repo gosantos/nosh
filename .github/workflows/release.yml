@@ -40,7 +40,6 @@ jobs:
   homebrew:
     needs: build
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: trigger homebrew formula update
         env:
