@@ -1,5 +1,4 @@
 mod app;
-mod calendar;
 mod fuzzy;
 mod markdown;
 mod storage;
@@ -11,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use app::{App, InputMode, NoteMode, Panel, View};
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::Local;
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
@@ -49,19 +48,9 @@ enum TodosCommand {
         ids: bool,
         #[arg(short, long)]
         archived: bool,
-        #[arg(long)]
-        today: bool,
-        #[arg(long)]
-        last_3_days: bool,
-        #[arg(long)]
-        last_7_days: bool,
-        #[arg(long)]
-        last_30_days: bool,
     },
     Create {
         description: String,
-        #[arg(long)]
-        due: Option<String>,
     },
     Edit {
         id: u64,
@@ -118,10 +107,7 @@ fn open_editor(content: &str) -> io::Result<String> {
     let new_content = std::fs::read_to_string(&tmp)?;
     let _ = std::fs::remove_file(&tmp);
     if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "editor exited with error",
-        ));
+        return Err(io::Error::other("editor exited with error"));
     }
     Ok(new_content)
 }
@@ -129,8 +115,8 @@ fn open_editor(content: &str) -> io::Result<String> {
 fn extract_title(content: &str) -> String {
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("# ") {
-            return trimmed[2..].trim().to_string();
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            return rest.trim().to_string();
         }
         if !trimmed.is_empty() {
             return trimmed.chars().take(60).collect();
@@ -162,12 +148,8 @@ fn run_todos_cmd(cmd: TodosCommand) {
             pending,
             ids,
             archived,
-            today,
-            last_3_days,
-            last_7_days,
-            last_30_days,
-        } => list_todos(done, pending, ids, archived, today, last_3_days, last_7_days, last_30_days),
-        TodosCommand::Create { description, due } => add_todo(&description, due.as_deref()),
+        } => list_todos(done, pending, ids, archived),
+        TodosCommand::Create { description } => add_todo(&description),
         TodosCommand::Edit { id, description } => edit_todo(id, &description),
         TodosCommand::Do { id } => mark_done(id),
         TodosCommand::Undo { id } => mark_undone(id),
@@ -177,41 +159,15 @@ fn run_todos_cmd(cmd: TodosCommand) {
     }
 }
 
-fn list_todos(
-    done: bool,
-    pending: bool,
-    ids: bool,
-    archived: bool,
-    today: bool,
-    last_3_days: bool,
-    last_7_days: bool,
-    last_30_days: bool,
-) {
+fn list_todos(done: bool, pending: bool, ids: bool, archived: bool) {
     let path = storage_path();
     let mut todos = storage::load(&path);
     todos.sort_by_key(|t| t.id);
-    let show_done = done || (!done && !pending);
-    let show_pending = pending || (!done && !pending);
-    let now = Local::now().naive_local();
+    let show_done = done || !pending;
+    let show_pending = pending || !done;
     let filtered: Vec<_> = todos
         .iter()
-        .filter(|t| {
-            t.archived == archived
-                && ((show_done && t.done) || (show_pending && !t.done))
-        })
-        .filter(|t| {
-            if today {
-                t.created_at.date() == now.date()
-            } else if last_3_days {
-                t.created_at >= now - chrono::Duration::days(3)
-            } else if last_7_days {
-                t.created_at >= now - chrono::Duration::days(7)
-            } else if last_30_days {
-                t.created_at >= now - chrono::Duration::days(30)
-            } else {
-                true
-            }
-        })
+        .filter(|t| t.archived == archived && ((show_done && t.done) || (show_pending && !t.done)))
         .collect();
     if filtered.is_empty() {
         println!("No todos found.");
@@ -219,35 +175,28 @@ fn list_todos(
     }
     for t in filtered {
         let status = if t.done { "[x]" } else { "[ ]" };
-        let due = match t.due_date {
-            Some(d) => format!("  due:{}", d.format("%Y-%m-%d")),
-            None => String::new(),
-        };
         if ids {
             println!(
-                "{}  {:>16}  {}  {}{}",
+                "{}  {:>16}  {}  {}",
                 status,
                 t.id,
                 t.created_at.format("%m-%d %H:%M"),
                 t.description,
-                due
             );
         } else {
             println!(
-                "{}  {}  {}{}",
+                "{}  {}  {}",
                 status,
                 t.created_at.format("%m-%d %H:%M"),
                 t.description,
-                due
             );
         }
     }
 }
 
-fn add_todo(description: &str, due_str: Option<&str>) {
+fn add_todo(description: &str) {
     let path = storage_path();
     let mut todos = storage::load(&path);
-    let due_date = due_str.and_then(parse_due_date);
     todos.push(Todo {
         id: storage::next_id(),
         description: description.to_string(),
@@ -255,54 +204,9 @@ fn add_todo(description: &str, due_str: Option<&str>) {
         archived: false,
         created_at: Local::now().naive_local(),
         completed_at: None,
-        due_date,
     });
     storage::save(&path, &todos);
-    match due_date {
-        Some(d) => println!("Added todo (due: {})", d.format("%Y-%m-%d")),
-        None => println!("Added todo"),
-    }
-}
-
-fn parse_due_date(input: &str) -> Option<NaiveDate> {
-    let today = Local::now().naive_local().date();
-    match input.to_lowercase().as_str() {
-        "today" => Some(today),
-        "tomorrow" => Some(today + chrono::Duration::days(1)),
-        "friday" | "fri" | "end-of-week" | "eow" => {
-            let days_until_friday = match today.weekday() {
-                chrono::Weekday::Mon => 4,
-                chrono::Weekday::Tue => 3,
-                chrono::Weekday::Wed => 2,
-                chrono::Weekday::Thu => 1,
-                chrono::Weekday::Fri => 0,
-                chrono::Weekday::Sat => 6,
-                chrono::Weekday::Sun => 5,
-            };
-            Some(today + chrono::Duration::days(days_until_friday))
-        }
-        "next-friday" | "next-week" | "nw" => {
-            let days_until_friday = match today.weekday() {
-                chrono::Weekday::Mon => 4,
-                chrono::Weekday::Tue => 3,
-                chrono::Weekday::Wed => 2,
-                chrono::Weekday::Thu => 1,
-                chrono::Weekday::Fri => 7,
-                chrono::Weekday::Sat => 13,
-                chrono::Weekday::Sun => 12,
-            };
-            Some(today + chrono::Duration::days(days_until_friday))
-        }
-        "30d" | "30days" | "month" => Some(today + chrono::Duration::days(30)),
-        other => {
-            if let Ok(d) = NaiveDate::parse_from_str(other, "%Y-%m-%d") {
-                Some(d)
-            } else {
-                eprintln!("Invalid due date: '{}'. Use today, tomorrow, friday, next-week, 30d, or YYYY-MM-DD", input);
-                None
-            }
-        }
-    }
+    println!("Added todo");
 }
 
 fn edit_todo(id: u64, description: &str) {
@@ -513,7 +417,9 @@ fn run_tui() -> io::Result<()> {
         let mut app = app.lock().unwrap();
         terminal.draw(|f| ui::draw(f, &mut app))?;
 
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed()).max(Duration::from_millis(1));
+        let timeout = tick_rate
+            .saturating_sub(last_tick.elapsed())
+            .max(Duration::from_millis(1));
         if event::poll(timeout)? {
             handle_event(&mut app)?;
         }
@@ -539,6 +445,28 @@ fn handle_event(app: &mut App) -> io::Result<()> {
 
         if app.modal.is_some() {
             return handle_todo_form_event(app, key.code);
+        }
+
+        if matches!(app.input_mode, InputMode::Search) {
+            return handle_search_event(app, key.code);
+        }
+
+        if matches!(app.input_mode, InputMode::NoteSearch) {
+            return handle_note_search_event(app, key.code);
+        }
+
+        if matches!(app.input_mode, InputMode::Renaming) {
+            return handle_rename_event(app, key.code);
+        }
+
+        if app.undo_state.is_active() && matches!(app.input_mode, InputMode::Normal) {
+            match key.code {
+                KeyCode::Char('u') => {
+                    app.undo_delete();
+                    return Ok(());
+                }
+                _ => app.clear_undo(),
+            }
         }
 
         match (&app.input_mode, &app.note_mode, &app.panel, &app.view) {
@@ -611,19 +539,21 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                         app.open_todo_form(Some(&todo));
                     }
                 }
+                KeyCode::Char('/') => app.start_search(),
                 KeyCode::Char('A') => app.archive_selected(),
-                KeyCode::Char('D') => {
-                    if let Some(idx) = app.selected_todo_index() {
-                        let todo = app.todos[idx].clone();
-                        app.open_todo_form(Some(&todo));
-                    }
-                }
                 KeyCode::Char('d') => app.delete_selected(),
                 KeyCode::Char(' ') => app.toggle_done(),
                 KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                 KeyCode::Tab => app.panel = Panel::Sidebar,
-                KeyCode::Esc => app.should_quit = true,
+                KeyCode::Esc => {
+                    if app.search_filter.is_some() {
+                        app.search_filter = None;
+                        app.search_buffer.clear();
+                    } else {
+                        app.should_quit = true;
+                    }
+                }
                 _ => {}
             },
 
@@ -652,6 +582,9 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.open_todo_form(None);
                 }
                 KeyCode::Char('d') => app.delete_note_by_side_index(),
+                KeyCode::Char('r') => app.start_rename(),
+                KeyCode::Char('y') => app.duplicate_note_by_side_index(),
+                KeyCode::Char('/') => app.start_note_search(),
                 KeyCode::Tab | KeyCode::Esc => app.panel = Panel::Main,
                 _ => {}
             },
@@ -665,7 +598,41 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 KeyCode::Char(c) => app.palette_type_char(c),
                 _ => {}
             },
+            _ => {}
         }
+    }
+    Ok(())
+}
+
+fn handle_search_event(app: &mut App, code: KeyCode) -> io::Result<()> {
+    match code {
+        KeyCode::Esc => app.cancel_search(),
+        KeyCode::Enter => app.apply_search(),
+        KeyCode::Backspace => app.search_buffer_pop(),
+        KeyCode::Char(c) => app.search_buffer_push(c),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_note_search_event(app: &mut App, code: KeyCode) -> io::Result<()> {
+    match code {
+        KeyCode::Esc => app.cancel_note_search(),
+        KeyCode::Enter => app.apply_note_search(),
+        KeyCode::Backspace => app.note_search_buffer_pop(),
+        KeyCode::Char(c) => app.note_search_buffer_push(c),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_rename_event(app: &mut App, code: KeyCode) -> io::Result<()> {
+    match code {
+        KeyCode::Esc => app.cancel_rename(),
+        KeyCode::Enter => app.confirm_rename(),
+        KeyCode::Backspace => app.rename_backspace(),
+        KeyCode::Char(c) => app.rename_type_char(c),
+        _ => {}
     }
     Ok(())
 }
@@ -673,44 +640,9 @@ fn handle_event(app: &mut App) -> io::Result<()> {
 fn handle_todo_form_event(app: &mut App, code: KeyCode) -> io::Result<()> {
     match code {
         KeyCode::Esc => app.close_todo_form(),
-        KeyCode::Tab | KeyCode::BackTab => app.todo_form_toggle_focus(),
-        KeyCode::Enter => {
-            if app.is_form_focus_calendar() {
-                app.confirm_todo_form();
-            } else {
-                app.todo_form_toggle_focus();
-            }
-        }
-        KeyCode::Backspace => {
-            if app.is_form_focus_description() {
-                app.todo_form_backspace();
-            } else {
-                app.calendar_clear();
-            }
-        }
-        KeyCode::Char(c) => {
-            if app.is_form_focus_description() {
-                app.todo_form_type_char(c);
-            } else {
-                match c {
-                    'h' => app.calendar_move_left(),
-                    'j' => app.calendar_move_down(),
-                    'k' => app.calendar_move_up(),
-                    'l' => app.calendar_move_right(),
-                    't' => app.calendar_jump_today(),
-                    'w' => app.calendar_jump_end_of_week(),
-                    'n' => app.calendar_jump_next_week(),
-                    'm' => app.calendar_jump_30_days(),
-                    '<' => app.calendar_prev_month(),
-                    '>' => app.calendar_next_month(),
-                    _ => {}
-                }
-            }
-        }
-        KeyCode::Left => app.calendar_move_left(),
-        KeyCode::Right => app.calendar_move_right(),
-        KeyCode::Up => app.calendar_move_up(),
-        KeyCode::Down => app.calendar_move_down(),
+        KeyCode::Enter => app.confirm_todo_form(),
+        KeyCode::Backspace => app.todo_form_backspace(),
+        KeyCode::Char(c) => app.todo_form_type_char(c),
         _ => {}
     }
     Ok(())

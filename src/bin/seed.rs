@@ -11,8 +11,6 @@ struct Todo {
     #[serde(default)]
     archived: bool,
     created_at: NaiveDateTime,
-    #[serde(default)]
-    due_date: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,7 +34,7 @@ fn main() {
     let notes_path = home().join(".nosh-notes.json");
     let todos_path = home().join(".nosh.json");
 
-    // ── NOTES ──────────────────────────────────────────────────────
+    // NOTES
     let notes_data: Vec<(&str, &str, &str)> = vec![
         (
             "Project Architecture Overview",
@@ -195,11 +193,9 @@ fn main() {
         ),
     ];
 
-    // ── TODOS ──────────────────────────────────────────────────────
     let mut todos = Vec::new();
 
     let descriptions = vec![
-        // Work / project tasks
         "Finish user dashboard redesign mockup",
         "Implement payment webhook handler for Stripe",
         "Write integration tests for authentication flow",
@@ -267,7 +263,6 @@ fn main() {
         "Update company wiki with architecture docs",
         "Review and update incident management runbook",
         "Renew SSL certificates before expiry",
-        // Personal / health
         "Go for a morning run (5K)",
         "Do 30 pushups and 30 situps",
         "Drink 8 glasses of water today",
@@ -287,7 +282,6 @@ fn main() {
         "Try a new sport this month",
         "Get 7+ hours of sleep tonight",
         "Reduce screen time 30 min before bed",
-        // Home
         "Water all indoor plants",
         "Repot the monstera into a larger container",
         "Clean the gutters this weekend",
@@ -308,7 +302,6 @@ fn main() {
         "Compile home inventory for insurance",
         "Set up composting bin",
         "Fix the squeaky bedroom door",
-        // Finance
         "Review monthly budget vs actual spending",
         "Rebalance investment portfolio",
         "Increase 401(k) contribution by 2%",
@@ -329,7 +322,6 @@ fn main() {
         "Create sinking funds for known expenses",
         "Set up budgeting software (YNAB or similar)",
         "Review recurring charges on bank statement",
-        // Learning
         "Read chapter 5 of Designing Data-Intensive Applications",
         "Complete Rustlings exercises 15-25",
         "Watch MIT 6.824 lecture on Raft consensus",
@@ -350,7 +342,6 @@ fn main() {
         "Read about CQRS pattern implementation",
         "Learn basic Japanese phrases for trip",
         "Watch conference talks from RustConf 2024",
-        // Social
         "Call mom and check in",
         "Catch up with college friends over dinner",
         "Plan birthday party for partner",
@@ -371,7 +362,6 @@ fn main() {
         "Help friend move to new apartment",
         "Send birthday gift to niece",
         "Participate in community cleanup event",
-        // Errands
         "Pick up dry cleaning",
         "Get oil change for the car",
         "Renew driver's license online",
@@ -392,7 +382,6 @@ fn main() {
         "Drop off recycling at center",
         "Exchange defective item at store",
         "Get passport photos taken",
-        // Misc / fun
         "Update personal website portfolio",
         "Back up photos to external drive and cloud",
         "Organize digital music collection",
@@ -415,51 +404,29 @@ fn main() {
         "Learn basic lock picking as a hobby",
     ];
 
-    // Generate todos with dates spread across June-July 2025
     let base = NaiveDateTime::parse_from_str("2025-05-20 08:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-    let mut seq: u64 = 0;
-
     for (i, desc) in descriptions.iter().enumerate() {
-        let offset_hours = i as i64 * 6; // one todo every 6 hours
+        let offset_hours = i as i64 * 6;
         let mut dt = base + chrono::Duration::hours(offset_hours);
-        // add a random-ish minute offset
         dt = dt.with_minute((i * 17 % 60) as u32).unwrap();
 
-        let archived = match i % 13 {
-            7 | 11 => true,
-            _ => false,
-        };
+        let archived = matches!(i % 13, 7 | 11);
 
         let done = if archived {
             true
         } else {
-            match i % 10 {
-                0 | 1 | 2 | 5 => true, // some done
-                9 => true,             // done
-                _ => false,            // pending
-            }
-        };
-
-        let due_date = if i % 7 == 0 {
-            Some(dt.date() + chrono::Duration::days(((i * 3) % 14 + 1) as i64))
-        } else if i % 11 == 0 {
-            Some(dt.date())
-        } else {
-            None
+            matches!(i % 10, 0 | 1 | 2 | 5 | 9)
         };
 
         todos.push(Todo {
-            id: seed_id(dt.and_utc().timestamp_millis(), seq),
+            id: seed_id(dt.and_utc().timestamp_millis(), i as u64),
             description: desc.to_string(),
             done,
             archived,
             created_at: dt,
-            due_date,
         });
-        seq += 1;
     }
 
-    // ── WRITE FILES ────────────────────────────────────────────────
     let notes: Vec<Note> = notes_data
         .into_iter()
         .enumerate()
@@ -482,8 +449,8 @@ fn main() {
     fs::write(&todos_path, serde_json::to_string_pretty(&todos).unwrap())
         .expect("Failed to write todos file");
 
-    println!("✅ Seeded {} notes → {}", notes.len(), notes_path.display());
-    println!("✅ Seeded {} todos → {}", todos.len(), todos_path.display());
+    println!("Seeded {} notes -> {}", notes.len(), notes_path.display());
+    println!("Seeded {} todos -> {}", todos.len(), todos_path.display());
     println!(
         "   done: {}, pending: {}, archived: {}",
         todos.iter().filter(|t| t.done).count(),

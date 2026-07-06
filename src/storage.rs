@@ -1,4 +1,4 @@
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -14,8 +14,6 @@ pub struct Todo {
     pub created_at: NaiveDateTime,
     #[serde(default)]
     pub completed_at: Option<NaiveDateTime>,
-    #[serde(default)]
-    pub due_date: Option<NaiveDate>,
 }
 
 static SEQUENCE: AtomicU16 = AtomicU16::new(0);

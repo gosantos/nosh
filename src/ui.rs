@@ -6,14 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, Modal, NoteMode, Panel, SideItem, TodoFormFocus, View};
-use crate::calendar;
+use crate::app::{App, InputMode, Modal, NoteMode, Panel, SideItem, View};
 use crate::markdown;
-
-enum DisplayItem {
-    Header(String),
-    Todo(usize),
-}
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -43,14 +37,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         render_palette(frame, area, app);
     }
 
+    if matches!(app.input_mode, InputMode::Search) {
+        render_search_bar(frame, area, app);
+    }
+
+    if matches!(app.input_mode, InputMode::Renaming) {
+        render_rename_bar(frame, area, app);
+    }
+
+    if matches!(app.input_mode, InputMode::NoteSearch) {
+        render_note_search_bar(frame, area, app);
+    }
+
+    if app.undo_state.is_active() && matches!(app.input_mode, InputMode::Normal) {
+        render_undo_toast(frame, area);
+    }
+
     if let Some(Modal::TodoForm {
         ref input_buffer,
-        ref calendar_state,
-        ref focus,
         ref editing_todo_index,
     }) = app.modal
     {
-        render_todo_form(frame, area, input_buffer, calendar_state, focus, editing_todo_index.is_some());
+        render_todo_form(frame, area, input_buffer, editing_todo_index.is_some());
     }
 }
 
@@ -77,10 +85,17 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
         format!("{} / {} done", done, total)
     };
 
+    let filter_display = app
+        .search_filter
+        .as_ref()
+        .map(|q| format!("  /{}/", q))
+        .unwrap_or_default();
+
     let title = Paragraph::new(Line::from(vec![
         Span::styled(" ✅", Style::default().fg(Color::Green).bold()),
         Span::styled(" nosh", Style::default().fg(Color::White).bold()),
         Span::styled(format!("  [{}]", label), Style::default().fg(Color::Cyan)),
+        Span::styled(filter_display, Style::default().fg(Color::Magenta).bold()),
     ]))
     .block(
         Block::default()
@@ -159,13 +174,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    let visible: Vec<usize> = app
-        .todos
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| t.archived == app.show_archived)
-        .map(|(i, _)| i)
-        .collect();
+    let visible = app.visible_indices();
 
     let border_color = if app.panel == Panel::Main {
         Color::Yellow
@@ -178,113 +187,60 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let sel = app.selected_index.min(visible.len().saturating_sub(1));
-
-    let groups = app.grouped_todos();
-    let display_items: Vec<DisplayItem> = {
-        let mut items = Vec::new();
-        for (header, indices) in &groups {
-            items.push(DisplayItem::Header(header.clone()));
-            for &idx in indices {
-                items.push(DisplayItem::Todo(idx));
-            }
-        }
-        items
-    };
-
-    let selected_display_pos = find_selected_display_pos(&display_items, sel).unwrap_or(0);
-    let total_display = display_items.len();
+    let total = visible.len();
+    let sel = app.selected_index.min(total.saturating_sub(1));
 
     let list_height = area.height.saturating_sub(2) as usize;
-    let max_scroll = total_display.saturating_sub(list_height);
-    if selected_display_pos < app.list_scroll {
-        app.list_scroll = selected_display_pos;
-    } else if selected_display_pos >= app.list_scroll + list_height {
-        app.list_scroll = selected_display_pos.saturating_sub(list_height).saturating_add(1);
+    let max_scroll = total.saturating_sub(list_height);
+    if sel < app.list_scroll {
+        app.list_scroll = sel;
+    } else if sel >= app.list_scroll + list_height {
+        app.list_scroll = sel.saturating_sub(list_height).saturating_add(1);
     }
     app.list_scroll = app.list_scroll.min(max_scroll);
 
-    let items: Vec<ListItem> = display_items
+    let items: Vec<ListItem> = visible
         .iter()
         .enumerate()
         .skip(app.list_scroll)
-        .map(|(display_pos, item)| match item {
-            DisplayItem::Header(label) => {
-                let line = Line::from(vec![
-                    Span::styled(
-                        format!("  {} ", '\u{2502}'),
-                        Style::default().fg(Color::Rgb(60, 60, 60)),
-                    ),
-                    Span::styled(
-                        label,
-                        Style::default().fg(Color::Rgb(120, 120, 120)).bold(),
-                    ),
-                ]);
-                ListItem::new(line).style(Style::default())
-            }
-            DisplayItem::Todo(todo_idx) => {
-                let todo = &app.todos[*todo_idx];
-                let is_selected =
-                    app.panel == Panel::Main && display_pos == selected_display_pos;
-                let checkbox = if todo.done { "✓" } else { "○" };
-                let check_color = if todo.done {
-                    Color::Green
-                } else {
-                    Color::Yellow
-                };
-                let prefix = if is_selected { "▸" } else { " " };
-                let date = todo
-                    .completed_at
-                    .unwrap_or(todo.created_at)
-                    .format("%m-%d %H:%M")
-                    .to_string();
+        .map(|(display_pos, todo_idx)| {
+            let todo = &app.todos[*todo_idx];
+            let is_selected = app.panel == Panel::Main && display_pos == sel;
+            let checkbox = if todo.done { "✓" } else { "○" };
+            let check_color = if todo.done {
+                Color::Green
+            } else {
+                Color::Yellow
+            };
+            let prefix = if is_selected { "▸" } else { " " };
+            let date = todo
+                .completed_at
+                .unwrap_or(todo.created_at)
+                .format("%m-%d %H:%M")
+                .to_string();
 
-                let mut spans = vec![
-                    Span::styled(
-                        format!("{} ", prefix),
-                        Style::default().fg(Color::Cyan).bold(),
-                    ),
-                    Span::styled(
-                        format!("{} ", checkbox),
-                        Style::default().fg(check_color),
-                    ),
-                ];
+            let desc_style = if todo.done {
+                Style::default().fg(Color::DarkGray).crossed_out()
+            } else {
+                Style::default().fg(Color::White)
+            };
 
-                let desc_style = if todo.done {
-                    Style::default().fg(Color::DarkGray).crossed_out()
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                spans.push(Span::styled(todo.description.clone(), desc_style));
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{} ", prefix),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
+                Span::styled(todo.description.clone(), desc_style),
+                Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
+            ]);
 
-                if let Some(due) = todo.due_date {
-                    let today = chrono::Local::now().naive_local().date();
-                    let (due_text, due_color) = if due == today {
-                        ("[today]".to_string(), Color::Yellow)
-                    } else if due < today && !todo.done {
-                        (format!("[due {}]", due.format("%m-%d")), Color::Red)
-                    } else {
-                        (format!("[{}]", due.format("%a %b %d")), Color::Cyan)
-                    };
-                    spans.push(Span::styled(
-                        format!("  {}", due_text),
-                        Style::default().fg(due_color),
-                    ));
-                }
-
-                spans.push(Span::styled(
-                    format!("  {}", date),
-                    Style::default().fg(Color::DarkGray),
-                ));
-
-                let line = Line::from(spans);
-                let item_style = if is_selected {
-                    Style::default().bg(Color::Rgb(35, 40, 48))
-                } else {
-                    Style::default()
-                };
-                ListItem::new(line).style(item_style)
-            }
+            let item_style = if is_selected {
+                Style::default().bg(Color::Rgb(35, 40, 48))
+            } else {
+                Style::default()
+            };
+            ListItem::new(line).style(item_style)
         })
         .collect();
 
@@ -302,19 +258,6 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     );
 
     frame.render_widget(list, area);
-}
-
-fn find_selected_display_pos(items: &[DisplayItem], selected: usize) -> Option<usize> {
-    let mut todo_count = 0;
-    for (i, item) in items.iter().enumerate() {
-        if matches!(item, DisplayItem::Todo(_)) {
-            if todo_count == selected {
-                return Some(i);
-            }
-            todo_count += 1;
-        }
-    }
-    None
 }
 
 fn render_list_empty(frame: &mut Frame, area: Rect, border_color: Color, app: &App) {
@@ -407,7 +350,11 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
     let lines = markdown::render(&note.content, inner.width);
     let total_lines = lines.len();
     let has_overflow = total_lines > max_lines;
-    let visible_count = if has_overflow { max_lines.saturating_sub(1).max(1) } else { max_lines };
+    let visible_count = if has_overflow {
+        max_lines.saturating_sub(1).max(1)
+    } else {
+        max_lines
+    };
     let max_scroll = total_lines.saturating_sub(visible_count);
     let scroll = app.note_scroll.min(max_scroll);
 
@@ -533,17 +480,9 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn render_todo_form(
-    frame: &mut Frame,
-    area: Rect,
-    input_buffer: &str,
-    calendar_state: &crate::calendar::CalendarState,
-    focus: &TodoFormFocus,
-    is_edit: bool,
-) {
-    let grid_rows = calendar::grid_rows(calendar_state.view_year, calendar_state.view_month);
+fn render_todo_form(frame: &mut Frame, area: Rect, input_buffer: &str, is_edit: bool) {
     let popup_w = 40u16;
-    let popup_h = (9 + grid_rows as u16).min(area.height.saturating_sub(2));
+    let popup_h = 8u16.min(area.height.saturating_sub(2));
     let popup = Rect::new(
         area.x + (area.width.saturating_sub(popup_w)) / 2,
         area.y + (area.height.saturating_sub(popup_h)) / 2,
@@ -553,20 +492,13 @@ fn render_todo_form(
 
     frame.render_widget(Clear, popup);
 
-    let selected_hint = calendar_state
-        .selected
-        .map(|d| format!("[{}]", d.format("%a %b %d")))
-        .unwrap_or_default();
     let label = if is_edit { "Edit" } else { "New" };
-    let title = if selected_hint.is_empty() {
-        format!(" {} ", label)
-    } else {
-        format!(" {}  {}", label, selected_hint)
-    };
-
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(title, Style::default().fg(Color::White)))
+        .title(Span::styled(
+            format!(" {} ", label),
+            Style::default().fg(Color::White),
+        ))
         .border_style(Style::default().fg(Color::Yellow));
     frame.render_widget(block.clone(), popup);
 
@@ -574,50 +506,31 @@ fn render_todo_form(
     let layout = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
-        Constraint::Length(1),
     ]);
-    let [_, input_area, _, month_area, day_area, grid_area, _, foot_area] = layout.areas(inner);
+    let [_, input_area, _, foot_area] = layout.areas(inner);
 
-    let is_input = matches!(focus, TodoFormFocus::Description);
-    let prefix = if is_input { "▸ " } else { "  " };
-    let cursor = if is_input { "▎" } else { "" };
-    let desc_text = if input_buffer.is_empty() && is_input {
+    let cursor = "▎";
+    let desc_text = if input_buffer.is_empty() {
         Span::styled("description", Style::default().fg(Color::DarkGray))
-    } else if input_buffer.is_empty() {
-        Span::raw("")
     } else {
         Span::raw(input_buffer)
     };
     let input_text = Line::from(vec![
-        Span::styled(prefix, Style::default().fg(Color::Cyan)),
+        Span::styled("▸ ", Style::default().fg(Color::Cyan)),
         desc_text,
         Span::styled(cursor, Style::default().fg(Color::Yellow)),
     ]);
     frame.render_widget(Paragraph::new(input_text), input_area);
 
-    let month_name = calendar::month_name_str(calendar_state.view_month);
-    let month_text = format!("{} {}", month_name, calendar_state.view_year);
+    let hint = "Enter:save  Esc:cancel";
     frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(month_text, Style::default().fg(Color::White))]))
-            .alignment(Alignment::Center),
-        month_area,
-    );
-
-    calendar::render_day_header(frame, day_area);
-    calendar::render_grid_compact(frame, grid_area, calendar_state, focus);
-
-    let hint = match focus {
-        TodoFormFocus::Description => "Tab:date  Enter:save  Esc:cancel",
-        TodoFormFocus::Calendar => "hjkl:nav  t:today  w:eow  n:+1w  m:+30d  <>:month  Bsp:clear",
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(hint, Style::default().fg(Color::DarkGray))]))
-            .alignment(Alignment::Center),
+        Paragraph::new(Line::from(vec![Span::styled(
+            hint,
+            Style::default().fg(Color::DarkGray),
+        )]))
+        .alignment(Alignment::Center),
         foot_area,
     );
 }
@@ -645,7 +558,6 @@ fn render_palette(frame: &mut Frame, area: Rect, app: &App) {
     ]);
     let [input_area, list_area, hint_area] = vertical.areas(inner);
 
-    // Input field.
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -657,7 +569,6 @@ fn render_palette(frame: &mut Frame, area: Rect, app: &App) {
     ]));
     frame.render_widget(input_text, input_inner);
 
-    // Results.
     if app.palette_items.is_empty() {
         let empty = Paragraph::new(vec![
             Line::from(""),
@@ -722,7 +633,6 @@ fn render_palette(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(list, list_area);
     }
 
-    // Hint.
     let hint = Paragraph::new(Line::from(vec![
         Span::styled("↑/↓ ", Style::default().fg(Color::Cyan).bold()),
         Span::styled("nav  ", Style::default().fg(Color::DarkGray)),
@@ -734,6 +644,107 @@ fn render_palette(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(hint, hint_area);
 }
 
+fn render_search_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let popup = Rect::new(
+        area.x + 2,
+        area.y + area.height.saturating_sub(4),
+        area.width.saturating_sub(4),
+        3,
+    );
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " Search ",
+            Style::default().fg(Color::Cyan).bold(),
+        ))
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(block.clone(), popup);
+
+    let inner = block.inner(popup);
+    let input_text = Line::from(vec![
+        Span::styled("/", Style::default().fg(Color::Magenta).bold()),
+        Span::raw(&app.search_buffer),
+        Span::styled("▎", Style::default().fg(Color::Yellow)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(if app.search_buffer.is_empty() {
+            vec![Line::from(vec![
+                Span::styled("/", Style::default().fg(Color::Magenta).bold()),
+                Span::styled("type to filter", Style::default().fg(Color::DarkGray)),
+            ])]
+        } else {
+            vec![input_text]
+        }),
+        inner,
+    );
+}
+
+fn render_rename_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let popup = Rect::new(
+        area.x + 2,
+        area.y + area.height.saturating_sub(4),
+        area.width.saturating_sub(4),
+        3,
+    );
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " Rename ",
+            Style::default().fg(Color::Cyan).bold(),
+        ))
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(block.clone(), popup);
+
+    let inner = block.inner(popup);
+    let input_text = Line::from(vec![
+        Span::styled("> ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw(&app.rename_buffer),
+        Span::styled("\u{258E}", Style::default().fg(Color::Yellow)),
+    ]);
+    frame.render_widget(Paragraph::new(vec![input_text]), inner);
+}
+
+fn render_note_search_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let popup = Rect::new(
+        area.x + 2,
+        area.y + area.height.saturating_sub(4),
+        area.width.saturating_sub(4),
+        3,
+    );
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " Note Search ",
+            Style::default().fg(Color::Cyan).bold(),
+        ))
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(block.clone(), popup);
+
+    let inner = block.inner(popup);
+    let input_text = Line::from(vec![
+        Span::styled("/", Style::default().fg(Color::Magenta).bold()),
+        Span::raw(&app.note_search_buffer),
+        Span::styled("\u{258E}", Style::default().fg(Color::Yellow)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(if app.note_search_buffer.is_empty() {
+            vec![Line::from(vec![
+                Span::styled("/", Style::default().fg(Color::Magenta).bold()),
+                Span::styled("type to filter notes", Style::default().fg(Color::DarkGray)),
+            ])]
+        } else {
+            vec![input_text]
+        }),
+        inner,
+    );
+}
+
 fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let max_width = area.width.saturating_sub(4).max(1);
     let width = (area.width * percent_x / 100).min(max_width).max(1);
@@ -742,6 +753,26 @@ fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect::new(x, y, width, height)
+}
+
+fn render_undo_toast(frame: &mut Frame, area: Rect) {
+    let toast_y = area.y + area.height.saturating_sub(6);
+    let toast_rect = Rect::new(area.x + area.width / 5, toast_y, 3 * area.width / 5, 3);
+    frame.render_widget(Clear, toast_rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(block.clone(), toast_rect);
+
+    let inner = block.inner(toast_rect);
+    let text = Paragraph::new(Line::from(vec![
+        Span::styled(" Deleted. ", Style::default().fg(Color::Red).bold()),
+        Span::styled("u", Style::default().fg(Color::Yellow).bold()),
+        Span::raw(" to undo, any other key to dismiss"),
+    ]))
+    .alignment(Alignment::Center);
+    frame.render_widget(text, inner);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
@@ -778,10 +809,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw("create  "),
                 Span::styled("e ", Style::default().fg(Color::Blue).bold()),
                 Span::raw("edit  "),
-                Span::styled("D ", Style::default().fg(Color::Yellow).bold()),
-                Span::raw("due date  "),
                 Span::styled("d ", Style::default().fg(Color::Red).bold()),
                 Span::raw("delete  "),
+                Span::styled("/ ", Style::default().fg(Color::Magenta).bold()),
+                Span::raw("search  "),
                 Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
                 Span::raw("toggle  "),
                 Span::styled(
@@ -794,6 +825,16 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             ],
             Style::default(),
         ),
+        (InputMode::Search, _) => (
+            vec![
+                Span::styled("  Search ", Style::default().fg(Color::Magenta).bold()),
+                Span::styled(
+                    "type to filter  Esc clear",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+            Style::default(),
+        ),
         (InputMode::Palette, _) => (
             vec![
                 Span::styled(
@@ -802,6 +843,26 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 ),
                 Span::styled(
                     "↑/↓ nav  Enter select  Esc close",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+            Style::default(),
+        ),
+        (InputMode::NoteSearch, _) => (
+            vec![
+                Span::styled("  Note Search ", Style::default().fg(Color::Magenta).bold()),
+                Span::styled(
+                    "type to filter  Esc cancel  Enter confirm",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+            Style::default(),
+        ),
+        (InputMode::Renaming, _) => (
+            vec![
+                Span::styled("  Rename ", Style::default().fg(Color::Cyan).bold()),
+                Span::styled(
+                    "type new name  Esc cancel  Enter confirm",
                     Style::default().fg(Color::DarkGray),
                 ),
             ],

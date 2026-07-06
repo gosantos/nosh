@@ -1,12 +1,15 @@
-use chrono::{Duration, Local, NaiveDate};
 use std::path::PathBuf;
 
-use crate::calendar::CalendarState;
+use chrono::{Duration, Local};
+
 use crate::storage::{self, Note, Todo};
 
 pub enum InputMode {
     Normal,
     Palette,
+    Search,
+    Renaming,
+    NoteSearch,
 }
 
 pub enum PaletteAction {
@@ -24,16 +27,9 @@ pub struct PaletteItem {
     pub matches: Vec<usize>,
 }
 
-pub enum TodoFormFocus {
-    Description,
-    Calendar,
-}
-
 pub enum Modal {
     TodoForm {
         input_buffer: String,
-        calendar_state: CalendarState,
-        focus: TodoFormFocus,
         editing_todo_index: Option<usize>,
     },
 }
@@ -53,6 +49,18 @@ pub enum Panel {
 pub enum View {
     Todos,
     Note,
+}
+
+pub enum UndoState {
+    Inactive,
+    TodoDeleted(Todo),
+    NoteDeleted(Note),
+}
+
+impl UndoState {
+    pub fn is_active(&self) -> bool {
+        !matches!(self, UndoState::Inactive)
+    }
 }
 
 pub struct App {
@@ -77,15 +85,36 @@ pub struct App {
     pub storage_path: PathBuf,
     notes_path: PathBuf,
     pub modal: Option<Modal>,
+    pub search_filter: Option<String>,
+    pub search_buffer: String,
+    pub undo_state: UndoState,
+    pub rename_buffer: String,
+    pub note_search_filter: Option<String>,
+    pub note_search_buffer: String,
 }
 
-fn side_items(view: &View, show_archived: bool, notes: &[Note]) -> Vec<SideItem> {
+fn side_items(
+    view: &View,
+    show_archived: bool,
+    notes: &[Note],
+    note_filter: Option<&str>,
+) -> Vec<SideItem> {
     let mut items = vec![
         SideItem::Active(view == &View::Todos && !show_archived),
         SideItem::Archive(view == &View::Todos && show_archived),
         SideItem::NotesHeader(notes.len()),
     ];
-    items.extend(notes.iter().map(|n| SideItem::Note(n.id, n.title.clone())));
+    items.extend(
+        notes
+            .iter()
+            .filter(|n| {
+                note_filter.is_none_or(|q| {
+                    let q = q.to_lowercase();
+                    n.title.to_lowercase().contains(&q) || n.content.to_lowercase().contains(&q)
+                })
+            })
+            .map(|n| SideItem::Note(n.id, n.title.clone())),
+    );
     items
 }
 
@@ -124,11 +153,22 @@ impl App {
             storage_path,
             notes_path,
             modal: None,
+            search_filter: None,
+            search_buffer: String::new(),
+            undo_state: UndoState::Inactive,
+            rename_buffer: String::new(),
+            note_search_filter: None,
+            note_search_buffer: String::new(),
         }
     }
 
     pub fn side_items(&self) -> Vec<SideItem> {
-        side_items(&self.view, self.show_archived, &self.notes)
+        side_items(
+            &self.view,
+            self.show_archived,
+            &self.notes,
+            self.note_search_filter.as_deref(),
+        )
     }
 
     pub fn side_count(&self) -> usize {
@@ -147,7 +187,7 @@ impl App {
         let content = self.note_lines.join("\n");
         let title = extract_title(&content);
         let note_id = {
-            let items = side_items(&self.view, self.show_archived, &self.notes);
+            let items = self.side_items();
             match items.get(self.side_index) {
                 Some(SideItem::Note(id, _)) => *id,
                 _ => return,
@@ -283,25 +323,29 @@ impl App {
         }
     }
 
-    pub fn visible_count(&self) -> usize {
-        self.todos
+    pub fn visible_indices(&self) -> Vec<usize> {
+        let indices: Vec<usize> = self
+            .todos
             .iter()
-            .filter(|t| t.archived == self.show_archived)
-            .count()
+            .enumerate()
+            .rev()
+            .filter(|(_, t)| t.archived == self.show_archived)
+            .filter(|(_, t)| {
+                self.search_filter.as_ref().is_none_or(|query| {
+                    t.description.to_lowercase().contains(&query.to_lowercase())
+                })
+            })
+            .map(|(i, _)| i)
+            .collect();
+        indices
+    }
+
+    pub fn visible_count(&self) -> usize {
+        self.visible_indices().len()
     }
 
     pub fn selected_todo_index(&self) -> Option<usize> {
-        let groups = self.grouped_todos();
-        let mut count = 0;
-        for (_, indices) in &groups {
-            for &idx in indices {
-                if count == self.selected_index {
-                    return Some(idx);
-                }
-                count += 1;
-            }
-        }
-        None
+        self.visible_indices().get(self.selected_index).copied()
     }
 
     fn clamp_selection(&mut self) {
@@ -313,7 +357,7 @@ impl App {
         }
     }
 
-    pub fn push_todo(&mut self, description: String, due_date: Option<NaiveDate>) {
+    pub fn push_todo(&mut self, description: String) {
         self.todos.push(Todo {
             id: storage::next_id(),
             description,
@@ -321,24 +365,21 @@ impl App {
             archived: false,
             created_at: Local::now().naive_local(),
             completed_at: None,
-            due_date,
         });
-        self.selected_index = self.visible_count().saturating_sub(1);
+        self.selected_index = 0;
         storage::save(&self.storage_path, &self.todos);
     }
 
     pub fn open_todo_form(&mut self, prefill: Option<&Todo>) {
-        let (buffer, due_date, editing_idx) = match prefill {
+        let (buffer, editing_idx) = match prefill {
             Some(t) => {
                 let idx = self.todos.iter().position(|x| x.id == t.id);
-                (t.description.clone(), t.due_date, idx)
+                (t.description.clone(), idx)
             }
-            None => (String::new(), None, None),
+            None => (String::new(), None),
         };
         self.modal = Some(Modal::TodoForm {
             input_buffer: buffer,
-            calendar_state: CalendarState::new(due_date),
-            focus: TodoFormFocus::Description,
             editing_todo_index: editing_idx,
         });
     }
@@ -348,20 +389,12 @@ impl App {
     }
 
     pub fn confirm_todo_form(&mut self) {
-        if let Some(Modal::TodoForm { ref mut calendar_state, .. }) = self.modal {
-            calendar_state.confirm();
-        }
-        let (desc, due_date, editing_idx) = match &self.modal {
+        let (desc, editing_idx) = match &self.modal {
             Some(Modal::TodoForm {
                 input_buffer,
-                calendar_state,
                 editing_todo_index,
                 ..
-            }) => (
-                input_buffer.trim().to_string(),
-                calendar_state.confirmed,
-                *editing_todo_index,
-            ),
+            }) => (input_buffer.trim().to_string(), *editing_todo_index),
             _ => return,
         };
         if desc.is_empty() {
@@ -369,66 +402,30 @@ impl App {
         }
         if let Some(idx) = editing_idx {
             self.todos[idx].description = desc;
-            self.todos[idx].due_date = due_date;
         } else {
-            self.push_todo(desc, due_date);
+            self.push_todo(desc);
         }
         self.modal = None;
     }
 
     pub fn todo_form_type_char(&mut self, c: char) {
-        if let Some(Modal::TodoForm { ref mut input_buffer, .. }) = self.modal {
+        if let Some(Modal::TodoForm {
+            ref mut input_buffer,
+            ..
+        }) = self.modal
+        {
             input_buffer.push(c);
         }
     }
 
     pub fn todo_form_backspace(&mut self) {
-        if let Some(Modal::TodoForm { ref mut input_buffer, .. }) = self.modal {
+        if let Some(Modal::TodoForm {
+            ref mut input_buffer,
+            ..
+        }) = self.modal
+        {
             input_buffer.pop();
         }
-    }
-
-    pub fn todo_form_toggle_focus(&mut self) {
-        if let Some(Modal::TodoForm { ref mut focus, .. }) = self.modal {
-            *focus = match focus {
-                TodoFormFocus::Description => TodoFormFocus::Calendar,
-                TodoFormFocus::Calendar => TodoFormFocus::Description,
-            };
-        }
-    }
-
-    fn with_calendar(&mut self, f: impl FnOnce(&mut CalendarState)) {
-        if let Some(Modal::TodoForm { ref mut calendar_state, .. }) = self.modal {
-            f(calendar_state);
-        }
-    }
-
-    pub fn calendar_move_left(&mut self) { self.with_calendar(|s| s.move_left()); }
-    pub fn calendar_move_right(&mut self) { self.with_calendar(|s| s.move_right()); }
-    pub fn calendar_move_up(&mut self) { self.with_calendar(|s| s.move_up()); }
-    pub fn calendar_move_down(&mut self) { self.with_calendar(|s| s.move_down()); }
-    pub fn calendar_next_month(&mut self) { self.with_calendar(|s| s.next_month()); }
-    pub fn calendar_prev_month(&mut self) { self.with_calendar(|s| s.prev_month()); }
-    pub fn calendar_clear(&mut self) { self.with_calendar(|s| s.clear_selection()); }
-    pub fn calendar_jump_today(&mut self) { self.with_calendar(|s| s.jump_today()); }
-    pub fn calendar_jump_end_of_week(&mut self) { self.with_calendar(|s| s.jump_end_of_week()); }
-    pub fn calendar_jump_next_week(&mut self) {
-        self.with_calendar(|s| s.jump_next_week());
-    }
-    pub fn calendar_jump_30_days(&mut self) { self.with_calendar(|s| s.jump_30_days()); }
-
-    pub fn is_form_focus_description(&self) -> bool {
-        matches!(
-            self.modal,
-            Some(Modal::TodoForm { focus: TodoFormFocus::Description, .. })
-        )
-    }
-
-    pub fn is_form_focus_calendar(&self) -> bool {
-        matches!(
-            self.modal,
-            Some(Modal::TodoForm { focus: TodoFormFocus::Calendar, .. })
-        )
     }
 
     pub fn toggle_done(&mut self) {
@@ -462,10 +459,36 @@ impl App {
 
     pub fn delete_selected(&mut self) {
         if let Some(idx) = self.selected_todo_index() {
-            self.todos.remove(idx);
+            let todo = self.todos.remove(idx);
             storage::save(&self.storage_path, &self.todos);
             self.clamp_selection();
+            self.undo_state = UndoState::TodoDeleted(todo);
         }
+    }
+
+    pub fn undo_delete(&mut self) {
+        let restored = match self.undo_state {
+            UndoState::TodoDeleted(ref todo) => {
+                self.todos.push(todo.clone());
+                storage::save(&self.storage_path, &self.todos);
+                self.selected_index = 0;
+                true
+            }
+            UndoState::NoteDeleted(ref note) => {
+                self.notes.push(note.clone());
+                self.notes.sort_by_key(|n| n.id);
+                storage::save_notes(&self.notes_path, &self.notes);
+                true
+            }
+            UndoState::Inactive => false,
+        };
+        if restored {
+            self.undo_state = UndoState::Inactive;
+        }
+    }
+
+    pub fn clear_undo(&mut self) {
+        self.undo_state = UndoState::Inactive;
     }
 
     pub fn archive_old(&mut self) {
@@ -482,40 +505,6 @@ impl App {
         if changed {
             storage::save(&self.storage_path, &self.todos);
         }
-    }
-
-    pub fn grouped_todos(&self) -> Vec<(String, Vec<usize>)> {
-        use chrono::NaiveDate;
-        let today = Local::now().naive_local().date();
-        let mut groups: std::collections::BTreeMap<NaiveDate, Vec<usize>> =
-            std::collections::BTreeMap::new();
-
-        for (i, todo) in self.todos.iter().enumerate() {
-            if todo.archived != self.show_archived {
-                continue;
-            }
-            let date = if self.show_archived {
-                todo.completed_at.unwrap_or(todo.created_at).date()
-            } else {
-                todo.due_date.unwrap_or(todo.created_at.date())
-            };
-            groups.entry(date).or_default().push(i);
-        }
-
-        groups
-            .into_iter()
-            .rev()
-            .map(|(date, todos)| {
-                let header = if date == today {
-                    "Today".to_string()
-                } else if date == today - chrono::Duration::days(1) {
-                    "Yesterday".to_string()
-                } else {
-                    date.format("%A, %b %d").to_string()
-                };
-                (header, todos)
-            })
-            .collect()
     }
 
     pub fn move_up(&mut self) {
@@ -567,14 +556,17 @@ impl App {
     }
 
     pub fn delete_note_by_side_index(&mut self) {
-        let id = {
+        let note_idx = {
             let items = self.side_items();
             match items.get(self.side_index) {
-                Some(SideItem::Note(id, _)) => *id,
+                Some(SideItem::Note(id, _)) => match self.notes.iter().position(|n| n.id == *id) {
+                    Some(idx) => idx,
+                    None => return,
+                },
                 _ => return,
             }
         };
-        self.notes.retain(|n| n.id != id);
+        let note = self.notes.remove(note_idx);
         if self.side_index >= self.side_count() && self.side_index > 0 {
             self.side_index -= 1;
         }
@@ -582,6 +574,139 @@ impl App {
             self.view = View::Todos;
         }
         storage::save_notes(&self.notes_path, &self.notes);
+        self.undo_state = UndoState::NoteDeleted(note);
+    }
+
+    pub fn start_rename(&mut self) {
+        let items = self.side_items();
+        if let Some(SideItem::Note(_, title)) = items.get(self.side_index) {
+            self.rename_buffer = title.clone();
+            self.input_mode = InputMode::Renaming;
+        }
+    }
+
+    pub fn confirm_rename(&mut self) {
+        let new_title = self.rename_buffer.trim().to_string();
+        if new_title.is_empty() {
+            self.cancel_rename();
+            return;
+        }
+        let note_id = {
+            let items = self.side_items();
+            match items.get(self.side_index) {
+                Some(SideItem::Note(id, _)) => *id,
+                _ => {
+                    self.cancel_rename();
+                    return;
+                }
+            }
+        };
+        if let Some(note) = self.notes.iter_mut().find(|n| n.id == note_id) {
+            note.title = new_title;
+            note.updated_at = Local::now().naive_local();
+            storage::save_notes(&self.notes_path, &self.notes);
+        }
+        self.input_mode = InputMode::Normal;
+        self.rename_buffer.clear();
+    }
+
+    pub fn cancel_rename(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.rename_buffer.clear();
+    }
+
+    pub fn rename_type_char(&mut self, c: char) {
+        self.rename_buffer.push(c);
+    }
+
+    pub fn rename_backspace(&mut self) {
+        self.rename_buffer.pop();
+    }
+
+    pub fn duplicate_note_by_side_index(&mut self) {
+        let original = {
+            let items = self.side_items();
+            match items.get(self.side_index) {
+                Some(SideItem::Note(id, _)) => match self.notes.iter().find(|n| n.id == *id) {
+                    Some(n) => n.clone(),
+                    None => return,
+                },
+                _ => return,
+            }
+        };
+        let new_title = if original.title.is_empty() {
+            String::new()
+        } else {
+            format!("{} (copy)", original.title)
+        };
+        let now = Local::now().naive_local();
+        let new_id = storage::next_id();
+        self.notes.push(Note {
+            id: new_id,
+            title: new_title,
+            content: original.content,
+            created_at: now,
+            updated_at: now,
+        });
+        self.notes.sort_by_key(|n| n.id);
+        storage::save_notes(&self.notes_path, &self.notes);
+        let items = self.side_items();
+        if let Some(pos) = items
+            .iter()
+            .position(|item| matches!(item, SideItem::Note(id, _) if *id == new_id))
+        {
+            self.side_index = pos;
+        }
+    }
+
+    pub fn start_note_search(&mut self) {
+        self.note_search_buffer.clear();
+        self.input_mode = InputMode::NoteSearch;
+    }
+
+    pub fn apply_note_search(&mut self) {
+        let query = self.note_search_buffer.trim().to_string();
+        if query.is_empty() {
+            self.note_search_filter = None;
+        } else {
+            self.note_search_filter = Some(query);
+        }
+        self.input_mode = InputMode::Normal;
+        if self.side_index >= self.side_count() {
+            self.side_index = self.side_count().saturating_sub(1);
+        }
+    }
+
+    pub fn cancel_note_search(&mut self) {
+        self.note_search_buffer.clear();
+        self.note_search_filter = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn note_search_buffer_push(&mut self, c: char) {
+        self.note_search_buffer.push(c);
+        let query = self.note_search_buffer.trim();
+        if query.is_empty() {
+            self.note_search_filter = None;
+        } else {
+            self.note_search_filter = Some(query.to_string());
+        }
+        if self.side_index >= self.side_count() {
+            self.side_index = self.side_count().saturating_sub(1);
+        }
+    }
+
+    pub fn note_search_buffer_pop(&mut self) {
+        self.note_search_buffer.pop();
+        let query = self.note_search_buffer.trim();
+        if query.is_empty() {
+            self.note_search_filter = None;
+        } else {
+            self.note_search_filter = Some(query.to_string());
+        }
+        if self.side_index >= self.side_count() {
+            self.side_index = self.side_count().saturating_sub(1);
+        }
     }
 
     pub fn note_scroll_up(&mut self) {
@@ -683,7 +808,7 @@ impl App {
                 self.close_palette();
                 let desc = desc.trim().to_string();
                 if !desc.is_empty() {
-                    self.push_todo(desc, None);
+                    self.push_todo(desc);
                 }
                 self.view = View::Todos;
                 self.show_archived = false;
@@ -692,6 +817,53 @@ impl App {
             }
             None => {}
         }
+    }
+
+    pub fn start_search(&mut self) {
+        if self.search_filter.is_none() {
+            self.search_buffer.clear();
+        }
+        self.input_mode = InputMode::Search;
+    }
+
+    pub fn apply_search(&mut self) {
+        let query = self.search_buffer.trim().to_string();
+        if query.is_empty() {
+            self.search_filter = None;
+        } else {
+            self.search_filter = Some(query);
+        }
+        self.input_mode = InputMode::Normal;
+        self.clamp_selection();
+    }
+
+    pub fn cancel_search(&mut self) {
+        self.search_buffer.clear();
+        self.search_filter = None;
+        self.input_mode = InputMode::Normal;
+        self.clamp_selection();
+    }
+
+    pub fn search_buffer_push(&mut self, c: char) {
+        self.search_buffer.push(c);
+        let query = self.search_buffer.trim();
+        if query.is_empty() {
+            self.search_filter = None;
+        } else {
+            self.search_filter = Some(query.to_string());
+        }
+        self.clamp_selection();
+    }
+
+    pub fn search_buffer_pop(&mut self) {
+        self.search_buffer.pop();
+        let query = self.search_buffer.trim();
+        if query.is_empty() {
+            self.search_filter = None;
+        } else {
+            self.search_filter = Some(query.to_string());
+        }
+        self.clamp_selection();
     }
 
     pub fn refresh_palette(&mut self) {
@@ -758,7 +930,6 @@ impl App {
             .palette_selected
             .min(self.palette_items.len().saturating_sub(1));
     }
-
 }
 
 fn preview(content: &str) -> String {
@@ -776,8 +947,8 @@ fn preview(content: &str) -> String {
 fn extract_title(content: &str) -> String {
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("# ") {
-            return trimmed[2..].trim().to_string();
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            return rest.trim().to_string();
         }
         if !trimmed.is_empty() {
             return trimmed.chars().take(60).collect();
