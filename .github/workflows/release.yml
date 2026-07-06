@@ -43,7 +43,7 @@ jobs:
     steps:
       - name: trigger homebrew formula update
         env:
-          GITHUB_TOKEN: ${{ secrets.HOMEBREW_PAT }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_PAT }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           gh workflow run update-formula.yml \
