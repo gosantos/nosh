@@ -44,6 +44,7 @@ pub enum InputMode {
     Renaming,
     NoteSearch,
     Creating,
+    Editing,
 }
 
 pub enum PaletteAction {
@@ -59,13 +60,6 @@ pub struct PaletteItem {
     pub action: PaletteAction,
     pub score: i64,
     pub matches: Vec<usize>,
-}
-
-pub enum Modal {
-    TodoForm {
-        input_buffer: String,
-        editing_todo_index: Option<usize>,
-    },
 }
 
 pub enum NoteMode {
@@ -120,7 +114,6 @@ pub struct App {
     pub palette_selected: usize,
     pub storage_path: PathBuf,
     notes_path: PathBuf,
-    pub modal: Option<Modal>,
     pub search_filter: Option<String>,
     pub search_buffer: String,
     pub undo_state: UndoState,
@@ -130,6 +123,8 @@ pub struct App {
     pub create_buffer: String,
     pub create_placeholder: String,
     placeholder_idx: usize,
+    pub edit_buffer: String,
+    pub edit_todo_index: Option<usize>,
 }
 
 fn side_items(
@@ -193,7 +188,6 @@ impl App {
             palette_selected: 0,
             storage_path,
             notes_path,
-            modal: None,
             search_filter: None,
             search_buffer: String::new(),
             undo_state: UndoState::Inactive,
@@ -203,6 +197,8 @@ impl App {
             create_buffer: String::new(),
             create_placeholder: String::new(),
             placeholder_idx: 0,
+            edit_buffer: String::new(),
+            edit_todo_index: None,
         }
     }
 
@@ -414,22 +410,39 @@ impl App {
         storage::save(&self.storage_path, &self.todos);
     }
 
-    pub fn open_todo_form(&mut self, prefill: Option<&Todo>) {
-        let (buffer, editing_idx) = match prefill {
-            Some(t) => {
-                let idx = self.todos.iter().position(|x| x.id == t.id);
-                (t.description.clone(), idx)
-            }
-            None => (String::new(), None),
-        };
-        self.modal = Some(Modal::TodoForm {
-            input_buffer: buffer,
-            editing_todo_index: editing_idx,
-        });
+    pub fn start_editing(&mut self) {
+        if let Some(idx) = self.selected_todo_index() {
+            self.edit_buffer = self.todos[idx].description.clone();
+            self.edit_todo_index = Some(idx);
+            self.input_mode = InputMode::Editing;
+        }
     }
 
-    pub fn close_todo_form(&mut self) {
-        self.modal = None;
+    pub fn confirm_editing(&mut self) {
+        let desc = self.edit_buffer.trim().to_string();
+        if !desc.is_empty() {
+            if let Some(idx) = self.edit_todo_index {
+                self.todos[idx].description = desc;
+                storage::save(&self.storage_path, &self.todos);
+            }
+        }
+        self.edit_buffer.clear();
+        self.edit_todo_index = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn cancel_editing(&mut self) {
+        self.edit_buffer.clear();
+        self.edit_todo_index = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn edit_type_char(&mut self, c: char) {
+        self.edit_buffer.push(c);
+    }
+
+    pub fn edit_backspace(&mut self) {
+        self.edit_buffer.pop();
     }
 
     pub fn start_creating(&mut self) {
@@ -464,46 +477,6 @@ impl App {
 
     pub fn create_backspace(&mut self) {
         self.create_buffer.pop();
-    }
-
-    pub fn confirm_todo_form(&mut self) {
-        let (desc, editing_idx) = match &self.modal {
-            Some(Modal::TodoForm {
-                input_buffer,
-                editing_todo_index,
-                ..
-            }) => (input_buffer.trim().to_string(), *editing_todo_index),
-            _ => return,
-        };
-        if desc.is_empty() {
-            return;
-        }
-        if let Some(idx) = editing_idx {
-            self.todos[idx].description = desc;
-        } else {
-            self.push_todo(desc);
-        }
-        self.modal = None;
-    }
-
-    pub fn todo_form_type_char(&mut self, c: char) {
-        if let Some(Modal::TodoForm {
-            ref mut input_buffer,
-            ..
-        }) = self.modal
-        {
-            input_buffer.push(c);
-        }
-    }
-
-    pub fn todo_form_backspace(&mut self) {
-        if let Some(Modal::TodoForm {
-            ref mut input_buffer,
-            ..
-        }) = self.modal
-        {
-            input_buffer.pop();
-        }
     }
 
     pub fn toggle_done(&mut self) {

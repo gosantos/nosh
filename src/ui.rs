@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, Modal, NoteMode, Panel, SideItem, View};
+use crate::app::{App, InputMode, NoteMode, Panel, SideItem, View};
 use crate::markdown;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -51,14 +51,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.undo_state.is_active() && matches!(app.input_mode, InputMode::Normal) {
         render_undo_toast(frame, area);
-    }
-
-    if let Some(Modal::TodoForm {
-        ref input_buffer,
-        ref editing_todo_index,
-    }) = app.modal
-    {
-        render_todo_form(frame, area, input_buffer, editing_todo_index.is_some());
     }
 }
 
@@ -176,6 +168,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let visible = app.visible_indices();
     let creating = matches!(app.input_mode, InputMode::Creating);
+    let editing = matches!(app.input_mode, InputMode::Editing);
 
     let border_color = if app.panel == Panel::Main {
         Color::Yellow
@@ -247,6 +240,9 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
         };
         let todo = &app.todos[*todo_idx];
         let is_selected = app.panel == Panel::Main && adjusted_pos == sel;
+
+        let is_being_edited = editing && Some(*todo_idx) == app.edit_todo_index;
+
         let checkbox = if todo.done { "✓" } else { "○" };
         let check_color = if todo.done {
             Color::Green
@@ -266,22 +262,36 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
             Style::default().fg(Color::White)
         };
 
-        let line = Line::from(vec![
-            Span::styled(
-                format!("{} ", prefix),
-                Style::default().fg(Color::Cyan).bold(),
-            ),
-            Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
-            Span::styled(todo.description.clone(), desc_style),
-            Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
-        ]);
-
-        let item_style = if is_selected {
-            Style::default().bg(Color::Rgb(35, 40, 48))
+        if is_being_edited {
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{} ", prefix),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
+                Span::styled(app.edit_buffer.clone(), Style::default().fg(Color::White)),
+                Span::styled("▎", Style::default().fg(Color::Yellow)),
+            ]);
+            let item_style = Style::default().bg(Color::Rgb(35, 40, 48));
+            items.push(ListItem::new(line).style(item_style));
         } else {
-            Style::default()
-        };
-        items.push(ListItem::new(line).style(item_style));
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{} ", prefix),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
+                Span::styled(todo.description.clone(), desc_style),
+                Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
+            ]);
+
+            let item_style = if is_selected {
+                Style::default().bg(Color::Rgb(35, 40, 48))
+            } else {
+                Style::default()
+            };
+            items.push(ListItem::new(line).style(item_style));
+        }
     }
 
     let list_title = if app.show_archived {
@@ -522,61 +532,6 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().bg(Color::Rgb(60, 60, 60)).fg(Color::White),
         )])),
         status_rect,
-    );
-}
-
-fn render_todo_form(frame: &mut Frame, area: Rect, input_buffer: &str, is_edit: bool) {
-    let popup_w = 40u16;
-    let popup_h = 8u16.min(area.height.saturating_sub(2));
-    let popup = Rect::new(
-        area.x + (area.width.saturating_sub(popup_w)) / 2,
-        area.y + (area.height.saturating_sub(popup_h)) / 2,
-        popup_w,
-        popup_h,
-    );
-
-    frame.render_widget(Clear, popup);
-
-    let label = if is_edit { "Edit" } else { "New" };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            format!(" {} ", label),
-            Style::default().fg(Color::White),
-        ))
-        .border_style(Style::default().fg(Color::Yellow));
-    frame.render_widget(block.clone(), popup);
-
-    let inner = block.inner(popup);
-    let layout = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ]);
-    let [_, input_area, _, foot_area] = layout.areas(inner);
-
-    let cursor = "▎";
-    let desc_text = if input_buffer.is_empty() {
-        Span::styled("description", Style::default().fg(Color::DarkGray))
-    } else {
-        Span::raw(input_buffer)
-    };
-    let input_text = Line::from(vec![
-        Span::styled("▸ ", Style::default().fg(Color::Cyan)),
-        desc_text,
-        Span::styled(cursor, Style::default().fg(Color::Yellow)),
-    ]);
-    frame.render_widget(Paragraph::new(input_text), input_area);
-
-    let hint = "Enter:save  Esc:cancel";
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            hint,
-            Style::default().fg(Color::DarkGray),
-        )]))
-        .alignment(Alignment::Center),
-        foot_area,
     );
 }
 
@@ -916,6 +871,16 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         (InputMode::Creating, _) => (
             vec![
                 Span::styled("  Creating ", Style::default().fg(Color::Green).bold()),
+                Span::styled(
+                    "Enter:save  Esc:cancel",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+            Style::default(),
+        ),
+        (InputMode::Editing, _) => (
+            vec![
+                Span::styled("  Editing ", Style::default().fg(Color::Blue).bold()),
                 Span::styled(
                     "Enter:save  Esc:cancel",
                     Style::default().fg(Color::DarkGray),

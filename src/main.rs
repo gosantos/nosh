@@ -446,10 +446,6 @@ fn handle_event(app: &mut App) -> io::Result<()> {
             return Ok(());
         }
 
-        if app.modal.is_some() {
-            return handle_todo_form_event(app, key.code);
-        }
-
         if matches!(app.input_mode, InputMode::Search) {
             return handle_search_event(app, key.code);
         }
@@ -464,6 +460,10 @@ fn handle_event(app: &mut App) -> io::Result<()> {
 
         if matches!(app.input_mode, InputMode::Creating) {
             return handle_creating_event(app, key.code);
+        }
+
+        if matches!(app.input_mode, InputMode::Editing) {
+            return handle_editing_event(app, key.code);
         }
 
         if app.undo_state.is_active() && matches!(app.input_mode, InputMode::Normal) {
@@ -542,10 +542,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.start_creating();
                 }
                 KeyCode::Char('e') => {
-                    if let Some(idx) = app.selected_todo_index() {
-                        let todo = app.todos[idx].clone();
-                        app.open_todo_form(Some(&todo));
-                    }
+                    app.start_editing();
                 }
                 KeyCode::Char('/') => app.start_search(),
                 KeyCode::Char('A') => app.archive_selected(),
@@ -642,12 +639,12 @@ fn handle_rename_event(app: &mut App, code: KeyCode) -> io::Result<()> {
     Ok(())
 }
 
-fn handle_todo_form_event(app: &mut App, code: KeyCode) -> io::Result<()> {
+fn handle_editing_event(app: &mut App, code: KeyCode) -> io::Result<()> {
     match code {
-        KeyCode::Esc => app.close_todo_form(),
-        KeyCode::Enter => app.confirm_todo_form(),
-        KeyCode::Backspace => app.todo_form_backspace(),
-        KeyCode::Char(c) => app.todo_form_type_char(c),
+        KeyCode::Esc => app.cancel_editing(),
+        KeyCode::Enter => app.confirm_editing(),
+        KeyCode::Backspace => app.edit_backspace(),
+        KeyCode::Char(c) => app.edit_type_char(c),
         _ => {}
     }
     Ok(())
