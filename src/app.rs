@@ -75,6 +75,8 @@ pub struct App {
     pub note_mode: NoteMode,
     pub list_scroll: usize,
     pub note_scroll: usize,
+    pub note_view_max_scroll: usize,
+    pub note_view_page_size: usize,
     pub note_cursor_line: usize,
     pub note_cursor_col: usize,
     pub note_lines: Vec<String>,
@@ -143,6 +145,8 @@ impl App {
             note_mode: NoteMode::Viewing,
             list_scroll: 0,
             note_scroll: 0,
+            note_view_max_scroll: 0,
+            note_view_page_size: 0,
             note_cursor_line: 0,
             note_cursor_col: 0,
             note_lines: Vec::new(),
@@ -549,6 +553,7 @@ impl App {
             Some(SideItem::Note(..)) => {
                 self.view = View::Note;
                 self.panel = Panel::Main;
+                self.note_view_max_scroll = 0;
                 self.start_edit_note();
             }
             _ => {}
@@ -716,7 +721,29 @@ impl App {
     }
 
     pub fn note_scroll_down(&mut self) {
-        self.note_scroll += 1;
+        let max = self.note_view_max_scroll;
+        if self.note_scroll < max {
+            self.note_scroll += 1;
+        }
+    }
+
+    pub fn note_scroll_page_down(&mut self) {
+        let max = self.note_view_max_scroll;
+        let size = self.note_view_page_size.max(1);
+        self.note_scroll = (self.note_scroll + size).min(max);
+    }
+
+    pub fn note_scroll_page_up(&mut self) {
+        let size = self.note_view_page_size.max(1);
+        self.note_scroll = self.note_scroll.saturating_sub(size);
+    }
+
+    pub fn note_scroll_top(&mut self) {
+        self.note_scroll = 0;
+    }
+
+    pub fn note_scroll_bottom(&mut self) {
+        self.note_scroll = self.note_view_max_scroll;
     }
 
     pub fn open_palette(&mut self) {
@@ -773,6 +800,8 @@ impl App {
                 self.view = View::Note;
                 self.panel = Panel::Main;
                 self.note_mode = NoteMode::Viewing;
+                self.note_scroll = 0;
+                self.note_view_max_scroll = 0;
                 let items = self.side_items();
                 if let Some(idx) = items
                     .iter()

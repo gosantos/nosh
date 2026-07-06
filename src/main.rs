@@ -514,6 +514,10 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 }
                 KeyCode::Down | KeyCode::Char('j') => app.note_scroll_down(),
                 KeyCode::Up | KeyCode::Char('k') => app.note_scroll_up(),
+                KeyCode::PageDown => app.note_scroll_page_down(),
+                KeyCode::PageUp => app.note_scroll_page_up(),
+                KeyCode::Home => app.note_scroll_top(),
+                KeyCode::End => app.note_scroll_bottom(),
                 KeyCode::Tab => app.panel = Panel::Sidebar,
                 _ => {}
             },

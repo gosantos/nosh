@@ -314,7 +314,7 @@ fn render_list_empty(frame: &mut Frame, area: Rect, border_color: Color, app: &A
     frame.render_widget(paragraph, content_area);
 }
 
-fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
+fn render_note_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let border_color = if app.panel == Panel::Main {
         Color::Yellow
     } else {
@@ -329,6 +329,8 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
                 .title(" Note ")
                 .border_style(Style::default().fg(border_color));
             frame.render_widget(block, area);
+            app.note_view_max_scroll = 0;
+            app.note_view_page_size = 0;
             return;
         }
     };
@@ -356,7 +358,10 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &App) {
         max_lines
     };
     let max_scroll = total_lines.saturating_sub(visible_count);
-    let scroll = app.note_scroll.min(max_scroll);
+    app.note_view_max_scroll = max_scroll;
+    app.note_view_page_size = visible_count;
+    app.note_scroll = app.note_scroll.min(max_scroll);
+    let scroll = app.note_scroll;
 
     let visible: Vec<&Line> = lines.iter().skip(scroll).take(visible_count).collect();
 
