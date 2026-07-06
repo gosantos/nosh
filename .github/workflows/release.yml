@@ -36,3 +36,17 @@ jobs:
             target/${{ matrix.target }}/release/nosh-${{ matrix.target }}.tar.gz
             target/${{ matrix.target }}/release/checksum.txt
           generate_release_notes: true
+
+  homebrew:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: trigger homebrew formula update
+        env:
+          GITHUB_TOKEN: ${{ secrets.HOMEBREW_PAT }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh workflow run update-formula.yml \
+            --repo gosantos/homebrew-nosh \
+            --ref main \
+            -f version="$version"
