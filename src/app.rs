@@ -131,7 +131,7 @@ impl App {
     pub fn new(storage_path: PathBuf) -> Self {
         let mut todos = storage::load(&storage_path);
         todos.sort_by_key(|t| t.id);
-        let notes_path = storage_path.with_file_name(".nosh-notes.json");
+        let notes_path = storage_path.with_file_name("notes.json");
         let notes = storage::load_notes(&notes_path);
         App {
             todos,

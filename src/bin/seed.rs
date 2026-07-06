@@ -22,8 +22,16 @@ struct Note {
     updated_at: NaiveDateTime,
 }
 
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+fn nosh_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("NOSH_DATA_DIR") {
+        let dir = PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        return dir;
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let dir = cwd.join(".nosh");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 fn seed_id(base_ts: i64, seq: u64) -> u64 {
@@ -31,8 +39,8 @@ fn seed_id(base_ts: i64, seq: u64) -> u64 {
 }
 
 fn main() {
-    let notes_path = home().join(".nosh-notes.json");
-    let todos_path = home().join(".nosh.json");
+    let notes_path = nosh_dir().join("notes.json");
+    let todos_path = nosh_dir().join("todos.json");
 
     // NOTES
     let notes_data: Vec<(&str, &str, &str)> = vec![

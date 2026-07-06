@@ -83,20 +83,23 @@ enum NotesCommand {
 }
 
 fn data_dir() -> PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    if cwd.join(".nosh.json").exists() {
-        cwd
-    } else {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default())
+    if let Ok(dir) = std::env::var("NOSH_DATA_DIR") {
+        let dir = PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        return dir;
     }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let dir = cwd.join(".nosh");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 fn storage_path() -> PathBuf {
-    data_dir().join(".nosh.json")
+    data_dir().join("todos.json")
 }
 
 fn notes_path() -> PathBuf {
-    data_dir().join(".nosh-notes.json")
+    data_dir().join("notes.json")
 }
 
 fn open_editor(content: &str) -> io::Result<String> {
