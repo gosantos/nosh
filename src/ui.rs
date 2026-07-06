@@ -175,6 +175,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let visible = app.visible_indices();
+    let creating = matches!(app.input_mode, InputMode::Creating);
 
     let border_color = if app.panel == Panel::Main {
         Color::Yellow
@@ -182,13 +183,21 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
         Color::Cyan
     };
 
-    if visible.is_empty() {
+    if visible.is_empty() && !creating {
         render_list_empty(frame, area, border_color, app);
         return;
     }
 
+    if creating {
+        app.list_scroll = 0;
+    }
+
     let total = visible.len();
-    let sel = app.selected_index.min(total.saturating_sub(1));
+    let sel = if creating {
+        0
+    } else {
+        app.selected_index.min(total.saturating_sub(1))
+    };
 
     let list_height = area.height.saturating_sub(2) as usize;
     let max_scroll = total.saturating_sub(list_height);
@@ -199,50 +208,81 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     app.list_scroll = app.list_scroll.min(max_scroll);
 
-    let items: Vec<ListItem> = visible
+    let max_todo_items = if creating {
+        list_height.saturating_sub(1)
+    } else {
+        list_height
+    };
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    if creating {
+        let desc_text = if app.create_buffer.is_empty() {
+            Span::styled(
+                app.create_placeholder.clone(),
+                Style::default().fg(Color::Rgb(100, 100, 100)),
+            )
+        } else {
+            Span::styled(app.create_buffer.clone(), Style::default().fg(Color::White))
+        };
+        let line = Line::from(vec![
+            Span::styled("▸ ", Style::default().fg(Color::Green).bold()),
+            Span::styled("○ ", Style::default().fg(Color::Yellow)),
+            desc_text,
+            Span::styled("▎", Style::default().fg(Color::Yellow)),
+        ]);
+        items.push(ListItem::new(line).style(Style::default().bg(Color::Rgb(35, 40, 48))));
+    }
+
+    for (display_pos, todo_idx) in visible
         .iter()
         .enumerate()
         .skip(app.list_scroll)
-        .map(|(display_pos, todo_idx)| {
-            let todo = &app.todos[*todo_idx];
-            let is_selected = app.panel == Panel::Main && display_pos == sel;
-            let checkbox = if todo.done { "✓" } else { "○" };
-            let check_color = if todo.done {
-                Color::Green
-            } else {
-                Color::Yellow
-            };
-            let prefix = if is_selected { "▸" } else { " " };
-            let date = todo
-                .completed_at
-                .unwrap_or(todo.created_at)
-                .format("%m-%d %H:%M")
-                .to_string();
+        .take(max_todo_items)
+    {
+        let adjusted_pos = if creating {
+            display_pos + 1
+        } else {
+            display_pos
+        };
+        let todo = &app.todos[*todo_idx];
+        let is_selected = app.panel == Panel::Main && adjusted_pos == sel;
+        let checkbox = if todo.done { "✓" } else { "○" };
+        let check_color = if todo.done {
+            Color::Green
+        } else {
+            Color::Yellow
+        };
+        let prefix = if is_selected { "▸" } else { " " };
+        let date = todo
+            .completed_at
+            .unwrap_or(todo.created_at)
+            .format("%m-%d %H:%M")
+            .to_string();
 
-            let desc_style = if todo.done {
-                Style::default().fg(Color::DarkGray).crossed_out()
-            } else {
-                Style::default().fg(Color::White)
-            };
+        let desc_style = if todo.done {
+            Style::default().fg(Color::DarkGray).crossed_out()
+        } else {
+            Style::default().fg(Color::White)
+        };
 
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("{} ", prefix),
-                    Style::default().fg(Color::Cyan).bold(),
-                ),
-                Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
-                Span::styled(todo.description.clone(), desc_style),
-                Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
-            ]);
+        let line = Line::from(vec![
+            Span::styled(
+                format!("{} ", prefix),
+                Style::default().fg(Color::Cyan).bold(),
+            ),
+            Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
+            Span::styled(todo.description.clone(), desc_style),
+            Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
+        ]);
 
-            let item_style = if is_selected {
-                Style::default().bg(Color::Rgb(35, 40, 48))
-            } else {
-                Style::default()
-            };
-            ListItem::new(line).style(item_style)
-        })
-        .collect();
+        let item_style = if is_selected {
+            Style::default().bg(Color::Rgb(35, 40, 48))
+        } else {
+            Style::default()
+        };
+        items.push(ListItem::new(line).style(item_style));
+    }
 
     let list_title = if app.show_archived {
         " Archived "
@@ -868,6 +908,16 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("  Rename ", Style::default().fg(Color::Cyan).bold()),
                 Span::styled(
                     "type new name  Esc cancel  Enter confirm",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+            Style::default(),
+        ),
+        (InputMode::Creating, _) => (
+            vec![
+                Span::styled("  Creating ", Style::default().fg(Color::Green).bold()),
+                Span::styled(
+                    "Enter:save  Esc:cancel",
                     Style::default().fg(Color::DarkGray),
                 ),
             ],

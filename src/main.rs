@@ -462,6 +462,10 @@ fn handle_event(app: &mut App) -> io::Result<()> {
             return handle_rename_event(app, key.code);
         }
 
+        if matches!(app.input_mode, InputMode::Creating) {
+            return handle_creating_event(app, key.code);
+        }
+
         if app.undo_state.is_active() && matches!(app.input_mode, InputMode::Normal) {
             match key.code {
                 KeyCode::Char('u') => {
@@ -511,9 +515,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 }
                 KeyCode::Char('n') => app.open_palette(),
                 KeyCode::Char('c') => {
-                    app.view = View::Todos;
-                    app.show_archived = false;
-                    app.open_todo_form(None);
+                    app.start_creating();
                 }
                 KeyCode::Down | KeyCode::Char('j') => app.note_scroll_down(),
                 KeyCode::Up | KeyCode::Char('k') => app.note_scroll_up(),
@@ -537,8 +539,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 }
                 KeyCode::Char('n') => app.open_palette(),
                 KeyCode::Char('c') => {
-                    app.show_archived = false;
-                    app.open_todo_form(None);
+                    app.start_creating();
                 }
                 KeyCode::Char('e') => {
                     if let Some(idx) = app.selected_todo_index() {
@@ -583,10 +584,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 }
                 KeyCode::Char('n') => app.open_palette(),
                 KeyCode::Char('c') => {
-                    app.view = View::Todos;
-                    app.show_archived = false;
-                    app.panel = Panel::Main;
-                    app.open_todo_form(None);
+                    app.start_creating();
                 }
                 KeyCode::Char('d') => app.delete_note_by_side_index(),
                 KeyCode::Char('r') => app.start_rename(),
@@ -650,6 +648,17 @@ fn handle_todo_form_event(app: &mut App, code: KeyCode) -> io::Result<()> {
         KeyCode::Enter => app.confirm_todo_form(),
         KeyCode::Backspace => app.todo_form_backspace(),
         KeyCode::Char(c) => app.todo_form_type_char(c),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_creating_event(app: &mut App, code: KeyCode) -> io::Result<()> {
+    match code {
+        KeyCode::Esc => app.cancel_creating(),
+        KeyCode::Enter => app.confirm_creating(),
+        KeyCode::Backspace => app.create_backspace(),
+        KeyCode::Char(c) => app.create_type_char(c),
         _ => {}
     }
     Ok(())

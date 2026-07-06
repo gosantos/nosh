@@ -4,12 +4,46 @@ use chrono::{Duration, Local};
 
 use crate::storage::{self, Note, Todo};
 
+const FUNNY_PLACEHOLDERS: &[&str] = &[
+    "Buy more todo apps",
+    "Delete all todos and start fresh",
+    "Write a todo about writing todos",
+    "Nap aggressively",
+    "Stare at ceiling until epiphany occurs",
+    "Panic in an organized fashion",
+    "Schedule panic for later",
+    "Fix the thing I broke fixing the other thing",
+    "Pet the cat (critical priority)",
+    "Contemplate existence of unpaid invoices",
+    "Overthink this task",
+    "Add 'learn to say no' to tomorrow's list",
+    "Drink coffee, then panic, then coffee again",
+    "Pretend to be productive",
+    "Optimize something that didn't need optimizing",
+    "Write beautiful code nobody will read",
+    "Reply to that email from 2019",
+    "Explain to rubber duck why this bug isn't my fault",
+    "Find the bug I wrote at 3am",
+    "Convince myself this is the last slide",
+    "Reorganize desk as proxy for reorganizing life",
+    "Postpone procrastination",
+    "Debug my debugging strategy",
+    "Turn it off and on again (emotionally)",
+    "Invent new word for procrastination",
+    "Microdose productivity",
+    "Aggressively close all browser tabs",
+    "Wonder where the day went",
+    "Add glitter to the burn-down chart",
+    "Figure out why it works before it stops working",
+];
+
 pub enum InputMode {
     Normal,
     Palette,
     Search,
     Renaming,
     NoteSearch,
+    Creating,
 }
 
 pub enum PaletteAction {
@@ -93,6 +127,9 @@ pub struct App {
     pub rename_buffer: String,
     pub note_search_filter: Option<String>,
     pub note_search_buffer: String,
+    pub create_buffer: String,
+    pub create_placeholder: String,
+    placeholder_idx: usize,
 }
 
 fn side_items(
@@ -163,6 +200,9 @@ impl App {
             rename_buffer: String::new(),
             note_search_filter: None,
             note_search_buffer: String::new(),
+            create_buffer: String::new(),
+            create_placeholder: String::new(),
+            placeholder_idx: 0,
         }
     }
 
@@ -390,6 +430,40 @@ impl App {
 
     pub fn close_todo_form(&mut self) {
         self.modal = None;
+    }
+
+    pub fn start_creating(&mut self) {
+        self.view = View::Todos;
+        self.panel = Panel::Main;
+        self.show_archived = false;
+        self.create_buffer.clear();
+        self.input_mode = InputMode::Creating;
+        self.selected_index = 0;
+        self.list_scroll = 0;
+        self.create_placeholder = FUNNY_PLACEHOLDERS[self.placeholder_idx].to_string();
+        self.placeholder_idx = (self.placeholder_idx + 1) % FUNNY_PLACEHOLDERS.len();
+    }
+
+    pub fn confirm_creating(&mut self) {
+        let desc = self.create_buffer.trim().to_string();
+        if !desc.is_empty() {
+            self.push_todo(desc);
+        }
+        self.create_buffer.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn cancel_creating(&mut self) {
+        self.create_buffer.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn create_type_char(&mut self, c: char) {
+        self.create_buffer.push(c);
+    }
+
+    pub fn create_backspace(&mut self) {
+        self.create_buffer.pop();
     }
 
     pub fn confirm_todo_form(&mut self) {
