@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -15,8 +18,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: build
         run: cargo build --release --target ${{ matrix.target }}
@@ -26,7 +30,7 @@ jobs:
           tar -czf nosh-${{ matrix.target }}.tar.gz nosh
           shasum -a 256 nosh-${{ matrix.target }}.tar.gz > checksum.txt
       - name: release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             target/${{ matrix.target }}/release/nosh-${{ matrix.target }}.tar.gz
