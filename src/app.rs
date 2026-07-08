@@ -558,6 +558,26 @@ impl App {
         }
     }
 
+    pub fn reload(&mut self) {
+        let todos = storage::load(&self.storage_path);
+        let mut sorted = todos;
+        sorted.sort_by_key(|t| t.id);
+        self.todos = sorted;
+        self.clamp_selection();
+
+        let notes = storage::load_notes(&self.notes_path);
+        self.notes = notes;
+
+        let count = self.side_count();
+        if self.side_index >= count {
+            self.side_index = count.saturating_sub(1);
+        }
+
+        if matches!(self.input_mode, InputMode::Palette) {
+            self.refresh_palette();
+        }
+    }
+
     pub fn move_up(&mut self) {
         if self.selected_index > 0 {
             self.selected_index -= 1;
@@ -1031,4 +1051,127 @@ fn extract_title(content: &str) -> String {
         }
     }
     "Untitled".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_todo(id: u64, desc: &str, done: bool) -> Todo {
+        Todo {
+            id,
+            description: desc.to_string(),
+            done,
+            archived: false,
+            created_at: Local::now().naive_local(),
+            completed_at: if done {
+                Some(Local::now().naive_local())
+            } else {
+                None
+            },
+        }
+    }
+
+    fn make_note(id: u64, title: &str) -> Note {
+        Note {
+            id,
+            title: title.to_string(),
+            content: format!("# {title}"),
+            created_at: Local::now().naive_local(),
+            updated_at: Local::now().naive_local(),
+        }
+    }
+
+    fn setup(todos: Vec<Todo>, notes: Vec<Note>) -> (TempDir, App) {
+        let dir = TempDir::new().unwrap();
+        let storage_path = dir.path().join("todos.json");
+        fs::write(&storage_path, serde_json::to_string_pretty(&todos).unwrap()).unwrap();
+        let notes_path = dir.path().join("notes.json");
+        fs::write(&notes_path, serde_json::to_string_pretty(&notes).unwrap()).unwrap();
+        let app = App::new(storage_path);
+        (dir, app)
+    }
+
+    #[test]
+    fn reload_picks_up_new_todo() {
+        let (_dir, mut app) = setup(vec![make_todo(1, "existing", false)], vec![]);
+        assert_eq!(app.todos.len(), 1);
+
+        let mut todos = storage::load(&app.storage_path);
+        todos.push(make_todo(2, "added via cli", false));
+        storage::save(&app.storage_path, &todos);
+
+        app.reload();
+
+        assert_eq!(app.todos.len(), 2);
+        assert!(app.todos.iter().any(|t| t.description == "added via cli"));
+    }
+
+    #[test]
+    fn reload_picks_up_deleted_todo() {
+        let (_dir, mut app) = setup(
+            vec![make_todo(1, "first", false), make_todo(2, "second", false)],
+            vec![],
+        );
+        assert_eq!(app.todos.len(), 2);
+
+        let todos: Vec<Todo> = storage::load(&app.storage_path)
+            .into_iter()
+            .filter(|t| t.id != 1)
+            .collect();
+        storage::save(&app.storage_path, &todos);
+
+        app.reload();
+
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.todos[0].id, 2);
+    }
+
+    #[test]
+    fn reload_picks_up_new_note() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "first")]);
+        assert_eq!(app.notes.len(), 1);
+
+        let mut notes = storage::load_notes(&app.notes_path);
+        notes.push(make_note(2, "added via cli"));
+        notes.sort_by_key(|n| n.id);
+        storage::save_notes(&app.notes_path, &notes);
+
+        app.reload();
+
+        assert_eq!(app.notes.len(), 2);
+    }
+
+    #[test]
+    fn reload_clamps_selection_when_all_todos_gone() {
+        let (_dir, mut app) = setup(
+            vec![make_todo(1, "a", false), make_todo(2, "b", false)],
+            vec![],
+        );
+        app.selected_index = 1;
+
+        storage::save(&app.storage_path, &[] as &[Todo]);
+        app.reload();
+
+        assert!(app.todos.is_empty());
+        assert_eq!(app.selected_index, 0);
+    }
+
+    #[test]
+    fn reload_handles_empty_files() {
+        let (_dir, mut app) = setup(
+            vec![make_todo(1, "gone", false)],
+            vec![make_note(1, "gone")],
+        );
+
+        storage::save(&app.storage_path, &[] as &[Todo]);
+        storage::save_notes(&app.notes_path, &[] as &[Note]);
+
+        app.reload();
+
+        assert!(app.todos.is_empty());
+        assert!(app.notes.is_empty());
+    }
 }

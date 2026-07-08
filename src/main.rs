@@ -6,8 +6,11 @@ mod ui;
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use app::{App, InputMode, NoteMode, Panel, View};
 use chrono::Local;
@@ -403,9 +406,27 @@ fn run_tui() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let app = Arc::new(Mutex::new(App::new(storage_path())));
+    let storage_path = storage_path();
+    let app = Arc::new(Mutex::new(App::new(storage_path.clone())));
     let tick_rate = Duration::from_millis(250);
     let mut last_tick = Instant::now();
+
+    let (file_tx, file_rx) = mpsc::channel::<()>();
+    let mut watcher = RecommendedWatcher::new(
+        move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                    let _ = file_tx.send(());
+                }
+            }
+        },
+        Config::default(),
+    )
+    .map_err(io::Error::other)?;
+
+    let _ = watcher.watch(&storage_path, RecursiveMode::NonRecursive);
+    let notes_path = storage_path.with_file_name("notes.json");
+    let _ = watcher.watch(&notes_path, RecursiveMode::NonRecursive);
 
     {
         let app = Arc::clone(&app);
@@ -417,6 +438,12 @@ fn run_tui() -> io::Result<()> {
     }
 
     loop {
+        if file_rx.try_recv().is_ok() {
+            while file_rx.try_recv().is_ok() {}
+            let mut app = app.lock().unwrap();
+            app.reload();
+        }
+
         let mut app = app.lock().unwrap();
         terminal.draw(|f| ui::draw(f, &mut app))?;
 
