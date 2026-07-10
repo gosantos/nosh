@@ -550,13 +550,11 @@ impl App {
                     .get(self.selected_index)
                     .map(|n| n.title.clone())
                     .unwrap_or_else(|| "this note".to_string()),
-                View::Todos => format!(
-                    "todo #{}",
-                    self.selected_todo_index()
-                        .and_then(|i| self.todos.get(i))
-                        .map(|t| t.id.to_string())
-                        .unwrap_or_else(|| "?".to_string())
-                ),
+                View::Todos => self
+                    .selected_todo_index()
+                    .and_then(|i| self.todos.get(i))
+                    .map(|t| t.description.clone())
+                    .unwrap_or_else(|| "this todo".to_string()),
             },
             Panel::Sidebar => match self.side_index {
                 0 => "all active todos? (not implemented)".to_string(),
@@ -576,11 +574,11 @@ impl App {
     }
 
     pub fn confirm_move_left(&mut self) {
-        self.confirm_selection = 0;
+        self.confirm_selection = if self.confirm_selection == 0 { 1 } else { 0 };
     }
 
     pub fn confirm_move_right(&mut self) {
-        self.confirm_selection = 1;
+        self.confirm_selection = if self.confirm_selection == 1 { 0 } else { 1 };
     }
 
     pub fn confirm_delete(&mut self) {

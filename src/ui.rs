@@ -680,7 +680,23 @@ fn render_search_bar(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_confirm_delete(frame: &mut Frame, area: Rect, app: &App) {
     let label = app.deletion_target_label();
-    let popup = centered_rect(area, 60, 35);
+    let truncated: String = if label.chars().count() > 28 {
+        let mut s = label.chars().take(25).collect::<String>();
+        s.push_str("...");
+        s
+    } else {
+        label
+    };
+
+    let msg_text = format!("Delete \"{}\"?", truncated);
+    let buttons_text = "▶ Yes    No";
+    let hint_text = "Enter confirm  ·  Esc cancel";
+    let content_width = msg_text.len().max(buttons_text.len()).max(hint_text.len()) as u16;
+    let width = (content_width + 8).min(area.width.saturating_sub(4)).max(1);
+    let height = 7_u16;
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
@@ -693,32 +709,25 @@ fn render_confirm_delete(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block.clone(), popup);
 
     let inner = block.inner(popup);
-    let v = Layout::vertical([
-        Constraint::Length(2),
+    let layout = Layout::vertical([
+        Constraint::Fill(1),
         Constraint::Length(1),
-        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
     ]);
-    let [msg_area, _, buttons_area] = v.areas(inner);
+    let [_top, msg_area, _gap1, buttons_area, _gap2, hint_area, _bottom] = layout.areas(inner);
 
-    let msg = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            format!("Delete: \"{}\"", label),
-            Style::default().fg(Color::White),
-        )]),
-    ])
+    let msg = Paragraph::new(vec![Line::from(vec![Span::styled(
+        msg_text,
+        Style::default().fg(Color::White),
+    )])])
     .alignment(Alignment::Center);
     frame.render_widget(msg, msg_area);
 
-    let cancel_style = if app.confirm_selection == 0 {
-        Style::default()
-            .bg(Color::Rgb(60, 60, 60))
-            .fg(Color::White)
-            .bold()
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let delete_style = if app.confirm_selection == 1 {
+    let yes_style = if app.confirm_selection == 1 {
         Style::default()
             .bg(Color::Rgb(180, 40, 40))
             .fg(Color::White)
@@ -726,55 +735,42 @@ fn render_confirm_delete(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Style::default().fg(Color::Red)
     };
+    let no_style = if app.confirm_selection == 0 {
+        Style::default()
+            .bg(Color::Rgb(60, 60, 60))
+            .fg(Color::White)
+            .bold()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
 
-    let cancel_arrow = if app.confirm_selection == 0 {
+    let yes_arrow = if app.confirm_selection == 1 {
         "▶ "
     } else {
         "  "
     };
-    let delete_arrow = if app.confirm_selection == 1 {
+    let no_arrow = if app.confirm_selection == 0 {
         "▶ "
     } else {
         "  "
     };
 
-    let buttons = Line::from(vec![
-        Span::styled(format!("{}Cancel", cancel_arrow), cancel_style),
+    let buttons = Paragraph::new(Line::from(vec![
+        Span::styled(format!("{}Yes", yes_arrow), yes_style),
         Span::raw("    "),
-        Span::styled(format!("{}Delete", delete_arrow), delete_style),
-    ]);
-    frame.render_widget(
-        Paragraph::new(buttons).alignment(Alignment::Center),
-        buttons_area,
-    );
+        Span::styled(format!("{}No", no_arrow), no_style),
+    ]))
+    .alignment(Alignment::Center);
+    frame.render_widget(buttons, buttons_area);
 
-    let hint = Rect {
-        y: buttons_area.y + buttons_area.height.saturating_sub(1),
-        height: 1,
-        ..buttons_area
-    };
-    if hint.y < area.y + area.height {
-        let hint_text = Paragraph::new(Line::from(vec![
-            Span::styled("←/→ ", Style::default().fg(Color::Cyan).bold()),
-            Span::styled("choose  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
-            Span::styled("confirm  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Red).bold()),
-            Span::styled("cancel", Style::default().fg(Color::DarkGray)),
-        ]))
-        .alignment(Alignment::Center);
-        frame.render_widget(hint_text, hint);
-    }
-}
-
-fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let max_width = area.width.saturating_sub(4).max(1);
-    let width = (area.width * percent_x / 100).min(max_width).max(1);
-    let max_height = area.height.saturating_sub(4).max(1);
-    let height = (area.height * percent_y / 100).min(max_height).max(1);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    Rect::new(x, y, width, height)
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("Enter", Style::default().fg(Color::Green).bold()),
+        Span::raw(" confirm  ·  "),
+        Span::styled("Esc", Style::default().fg(Color::Red).bold()),
+        Span::raw(" cancel"),
+    ]))
+    .alignment(Alignment::Center);
+    frame.render_widget(hint, hint_area);
 }
 
 fn render_undo_toast(frame: &mut Frame, area: Rect) {
