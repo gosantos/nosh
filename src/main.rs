@@ -596,12 +596,8 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                 KeyCode::Tab => app.panel = Panel::Sidebar,
                 KeyCode::Esc => {
-                    if app.search_filter.is_some() {
-                        app.search_filter = None;
-                        app.search_buffer.clear();
-                    } else {
-                        app.should_quit = true;
-                    }
+                    app.search_filter = None;
+                    app.search_buffer.clear();
                 }
                 _ => {}
             },
@@ -648,12 +644,8 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 }
                 KeyCode::Tab => app.panel = Panel::Sidebar,
                 KeyCode::Esc => {
-                    if app.search_filter.is_some() {
-                        app.search_filter = None;
-                        app.search_buffer.clear();
-                    } else {
-                        app.should_quit = true;
-                    }
+                    app.search_filter = None;
+                    app.search_buffer.clear();
                 }
                 _ => {}
             },
