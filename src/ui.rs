@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, NoteMode, Panel, SideItem, View};
+use crate::app::{App, InputMode, NoteMode, Panel, SideItem, View, VisibleEntry};
 use crate::markdown;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -146,6 +146,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let visible = app.visible_indices();
+    let entries = app.visible_entries();
     let creating = matches!(app.input_mode, InputMode::Creating);
     let editing = matches!(app.input_mode, InputMode::Editing);
 
@@ -164,23 +165,40 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
         app.list_scroll = 0;
     }
 
-    let total = visible.len();
     let sel = if creating {
         0
     } else {
-        app.selected_index.min(total.saturating_sub(1))
+        app.selected_index.min(visible.len().saturating_sub(1))
     };
 
+    let mut selected_visual_pos: usize = 0;
+    {
+        let mut todo_count = 0;
+        for (pos, entry) in entries.iter().enumerate() {
+            if matches!(entry, VisibleEntry::Todo(_)) {
+                if todo_count == app.selected_index {
+                    selected_visual_pos = pos;
+                    break;
+                }
+                todo_count += 1;
+            }
+        }
+    }
+
+    let total_entries = entries.len();
     let list_height = area.height.saturating_sub(2) as usize;
-    let max_scroll = total.saturating_sub(list_height);
-    if sel < app.list_scroll {
-        app.list_scroll = sel;
-    } else if sel >= app.list_scroll + list_height {
-        app.list_scroll = sel.saturating_sub(list_height).saturating_add(1);
+    let max_scroll = total_entries.saturating_sub(list_height);
+
+    if selected_visual_pos < app.list_scroll {
+        app.list_scroll = selected_visual_pos;
+    } else if selected_visual_pos >= app.list_scroll + list_height {
+        app.list_scroll = selected_visual_pos
+            .saturating_sub(list_height)
+            .saturating_add(1);
     }
     app.list_scroll = app.list_scroll.min(max_scroll);
 
-    let max_todo_items = if creating {
+    let max_entries = if creating {
         list_height.saturating_sub(1)
     } else {
         list_height
@@ -206,70 +224,77 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
         items.push(ListItem::new(line).style(Style::default().bg(Color::Rgb(35, 40, 48))));
     }
 
-    for (display_pos, todo_idx) in visible
+    let mut flat_pos: usize = 0;
+    for (_visual_pos, entry) in entries
         .iter()
         .enumerate()
         .skip(app.list_scroll)
-        .take(max_todo_items)
+        .take(max_entries)
     {
-        let adjusted_pos = if creating {
-            display_pos + 1
-        } else {
-            display_pos
-        };
-        let todo = &app.todos[*todo_idx];
-        let is_selected = app.panel == Panel::Main && adjusted_pos == sel;
+        match entry {
+            VisibleEntry::GroupHeader(label) => {
+                items.push(ListItem::new(Line::from(vec![Span::styled(
+                    label.clone(),
+                    Style::default().fg(Color::Rgb(140, 140, 140)).bold(),
+                )])));
+            }
+            VisibleEntry::Todo(todo_idx) => {
+                let todo = &app.todos[*todo_idx];
+                let is_selected = app.panel == Panel::Main && !creating && flat_pos == sel;
+                let is_being_edited = editing && Some(*todo_idx) == app.edit_todo_index;
 
-        let is_being_edited = editing && Some(*todo_idx) == app.edit_todo_index;
+                let checkbox = if todo.done { "✓" } else { "○" };
+                let check_color = if todo.done {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                };
+                let prefix = if is_selected { "▸" } else { " " };
+                let date = todo
+                    .completed_at
+                    .unwrap_or(todo.created_at)
+                    .format("%m-%d %H:%M")
+                    .to_string();
 
-        let checkbox = if todo.done { "✓" } else { "○" };
-        let check_color = if todo.done {
-            Color::Green
-        } else {
-            Color::Yellow
-        };
-        let prefix = if is_selected { "▸" } else { " " };
-        let date = todo
-            .completed_at
-            .unwrap_or(todo.created_at)
-            .format("%m-%d %H:%M")
-            .to_string();
+                let desc_style = if todo.done {
+                    Style::default().fg(Color::DarkGray).crossed_out()
+                } else {
+                    Style::default().fg(Color::White)
+                };
 
-        let desc_style = if todo.done {
-            Style::default().fg(Color::DarkGray).crossed_out()
-        } else {
-            Style::default().fg(Color::White)
-        };
+                if is_being_edited {
+                    let line = Line::from(vec![
+                        Span::styled(
+                            format!("{} ", prefix),
+                            Style::default().fg(Color::Cyan).bold(),
+                        ),
+                        Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
+                        Span::styled(app.edit_buffer.clone(), Style::default().fg(Color::White)),
+                        Span::styled("▎", Style::default().fg(Color::Yellow)),
+                    ]);
+                    let item_style = Style::default().bg(Color::Rgb(35, 40, 48));
+                    items.push(ListItem::new(line).style(item_style));
+                } else {
+                    let line = Line::from(vec![
+                        Span::styled(
+                            format!("{} ", prefix),
+                            Style::default().fg(Color::Cyan).bold(),
+                        ),
+                        Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
+                        Span::styled(todo.description.clone(), desc_style),
+                        Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
+                    ]);
 
-        if is_being_edited {
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("{} ", prefix),
-                    Style::default().fg(Color::Cyan).bold(),
-                ),
-                Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
-                Span::styled(app.edit_buffer.clone(), Style::default().fg(Color::White)),
-                Span::styled("▎", Style::default().fg(Color::Yellow)),
-            ]);
-            let item_style = Style::default().bg(Color::Rgb(35, 40, 48));
-            items.push(ListItem::new(line).style(item_style));
-        } else {
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("{} ", prefix),
-                    Style::default().fg(Color::Cyan).bold(),
-                ),
-                Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
-                Span::styled(todo.description.clone(), desc_style),
-                Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
-            ]);
+                    let item_style = if is_selected {
+                        Style::default().bg(Color::Rgb(35, 40, 48))
+                    } else {
+                        Style::default()
+                    };
+                    items.push(ListItem::new(line).style(item_style));
+                }
 
-            let item_style = if is_selected {
-                Style::default().bg(Color::Rgb(35, 40, 48))
-            } else {
-                Style::default()
-            };
-            items.push(ListItem::new(line).style(item_style));
+                flat_pos += 1;
+            }
         }
     }
 

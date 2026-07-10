@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use chrono::{Duration, Local};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 
 use crate::storage::{self, Note, Todo};
 
@@ -130,7 +130,58 @@ impl SideItem {
     }
 }
 
+#[derive(Clone)]
+pub enum VisibleEntry {
+    GroupHeader(String),
+    Todo(usize),
+}
+
+fn date_label(date: NaiveDate) -> String {
+    let today = Local::now().naive_local().date();
+    if date == today {
+        "Today".to_string()
+    } else if date == today - Duration::days(1) {
+        "Yesterday".to_string()
+    } else if date > today - Duration::days(7) {
+        date.format("%A").to_string()
+    } else if date.year() == today.year() {
+        date.format("%B %d").to_string()
+    } else {
+        date.format("%B %d, %Y").to_string()
+    }
+}
+
 impl App {
+    pub fn visible_entries(&self) -> Vec<VisibleEntry> {
+        let mut entries = Vec::new();
+        let mut prev_date: Option<NaiveDate> = None;
+
+        let filtered: Vec<(usize, &Todo)> = self
+            .todos
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, t)| t.archived == self.show_archived)
+            .filter(|(_, t)| {
+                self.search_filter.as_ref().is_none_or(|query| {
+                    t.description.to_lowercase().contains(&query.to_lowercase())
+                })
+            })
+            .collect();
+
+        for (idx, todo) in &filtered {
+            let date = todo.created_at.date();
+            if prev_date != Some(date) {
+                prev_date = Some(date);
+                let label = date_label(date);
+                entries.push(VisibleEntry::GroupHeader(label));
+            }
+            entries.push(VisibleEntry::Todo(*idx));
+        }
+
+        entries
+    }
+
     pub fn new(storage_path: PathBuf) -> Self {
         let mut todos = storage::load(&storage_path);
         todos.sort_by_key(|t| t.id);
