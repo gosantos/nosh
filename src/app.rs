@@ -139,11 +139,11 @@ pub enum VisibleEntry {
 fn date_label(date: NaiveDate) -> String {
     let today = Local::now().naive_local().date();
     if date == today {
-        "Today".to_string()
+        format!("Today (W{})", date.iso_week().week())
     } else if date == today - Duration::days(1) {
         "Yesterday".to_string()
     } else if date > today - Duration::days(7) {
-        date.format("%A").to_string()
+        format!("{} (W{})", date.format("%A"), date.iso_week().week())
     } else if date.year() == today.year() {
         date.format("%B %d").to_string()
     } else {
