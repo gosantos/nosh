@@ -39,27 +39,10 @@ const FUNNY_PLACEHOLDERS: &[&str] = &[
 
 pub enum InputMode {
     Normal,
-    Palette,
     Search,
-    Renaming,
-    NoteSearch,
     Creating,
     Editing,
-}
-
-pub enum PaletteAction {
-    OpenNote(u64),
-    CreateNote(String),
-    CreateTodo(String),
-}
-
-pub struct PaletteItem {
-    pub title: String,
-    pub subtitle: String,
-    pub icon: char,
-    pub action: PaletteAction,
-    pub score: i64,
-    pub matches: Vec<usize>,
+    ConfirmDelete,
 }
 
 pub enum NoteMode {
@@ -77,12 +60,12 @@ pub enum Panel {
 pub enum View {
     Todos,
     Note,
+    Notes,
 }
 
 pub enum UndoState {
     Inactive,
     TodoDeleted(Todo),
-    NoteDeleted(Note),
 }
 
 impl UndoState {
@@ -109,54 +92,42 @@ pub struct App {
     pub note_cursor_col: usize,
     pub note_lines: Vec<String>,
     pub side_index: usize,
-    pub palette_query: String,
-    pub palette_items: Vec<PaletteItem>,
-    pub palette_selected: usize,
+    pub current_note_index: Option<usize>,
     pub storage_path: PathBuf,
     notes_path: PathBuf,
     pub search_filter: Option<String>,
     pub search_buffer: String,
     pub undo_state: UndoState,
-    pub rename_buffer: String,
-    pub note_search_filter: Option<String>,
-    pub note_search_buffer: String,
     pub create_buffer: String,
     pub create_placeholder: String,
     placeholder_idx: usize,
     pub edit_buffer: String,
     pub edit_todo_index: Option<usize>,
+    pub confirm_selection: usize,
 }
 
-fn side_items(
-    view: &View,
-    show_archived: bool,
-    notes: &[Note],
-    note_filter: Option<&str>,
-) -> Vec<SideItem> {
-    let mut items = vec![
-        SideItem::Active(view == &View::Todos && !show_archived),
-        SideItem::Archive(view == &View::Todos && show_archived),
-        SideItem::NotesHeader(notes.len()),
-    ];
-    items.extend(
-        notes
-            .iter()
-            .filter(|n| {
-                note_filter.is_none_or(|q| {
-                    let q = q.to_lowercase();
-                    n.title.to_lowercase().contains(&q) || n.content.to_lowercase().contains(&q)
-                })
-            })
-            .map(|n| SideItem::Note(n.id, n.title.clone())),
-    );
-    items
+fn side_items(todos: &[Todo], notes: &[Note]) -> Vec<SideItem> {
+    vec![
+        SideItem::Todos(todos.iter().filter(|t| !t.archived).count()),
+        SideItem::Archive(todos.iter().filter(|t| t.archived).count()),
+        SideItem::Notes(notes.len()),
+    ]
 }
 
 pub enum SideItem {
-    Active(bool),
-    Archive(bool),
-    NotesHeader(usize),
-    Note(u64, String),
+    Todos(usize),
+    Archive(usize),
+    Notes(usize),
+}
+
+impl SideItem {
+    pub fn is_active(&self, view: &View, show_archived: bool) -> bool {
+        match self {
+            SideItem::Todos(_) => *view == View::Todos && !show_archived,
+            SideItem::Archive(_) => *view == View::Todos && show_archived,
+            SideItem::Notes(_) => matches!(view, View::Note | View::Notes),
+        }
+    }
 }
 
 impl App {
@@ -183,57 +154,37 @@ impl App {
             note_cursor_col: 0,
             note_lines: Vec::new(),
             side_index: 0,
-            palette_query: String::new(),
-            palette_items: Vec::new(),
-            palette_selected: 0,
+            current_note_index: None,
             storage_path,
             notes_path,
             search_filter: None,
             search_buffer: String::new(),
             undo_state: UndoState::Inactive,
-            rename_buffer: String::new(),
-            note_search_filter: None,
-            note_search_buffer: String::new(),
             create_buffer: String::new(),
             create_placeholder: String::new(),
             placeholder_idx: 0,
             edit_buffer: String::new(),
             edit_todo_index: None,
+            confirm_selection: 0,
         }
     }
 
     pub fn side_items(&self) -> Vec<SideItem> {
-        side_items(
-            &self.view,
-            self.show_archived,
-            &self.notes,
-            self.note_search_filter.as_deref(),
-        )
+        side_items(&self.todos, &self.notes)
     }
 
     pub fn side_count(&self) -> usize {
-        self.side_items().len()
+        3
     }
 
     pub fn current_note(&self) -> Option<&Note> {
-        let items = self.side_items();
-        match items.get(self.side_index) {
-            Some(SideItem::Note(id, _)) => self.notes.iter().find(|n| n.id == *id),
-            _ => None,
-        }
+        self.current_note_index.and_then(|i| self.notes.get(i))
     }
 
     pub fn save_current_note(&mut self) {
         let content = self.note_lines.join("\n");
         let title = extract_title(&content);
-        let note_id = {
-            let items = self.side_items();
-            match items.get(self.side_index) {
-                Some(SideItem::Note(id, _)) => *id,
-                _ => return,
-            }
-        };
-        if let Some(note) = self.notes.iter_mut().find(|n| n.id == note_id) {
+        if let Some(note) = self.current_note_index.and_then(|i| self.notes.get_mut(i)) {
             note.content = content;
             note.title = title;
             note.updated_at = Local::now().naive_local();
@@ -471,6 +422,25 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    pub fn start_creating_note(&mut self) {
+        let now = Local::now().naive_local();
+        let note = Note {
+            id: storage::next_id(),
+            title: String::new(),
+            content: String::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        self.notes.push(note);
+        self.notes.sort_by_key(|n| n.id);
+        storage::save_notes(&self.notes_path, &self.notes);
+        self.current_note_index = Some(self.notes.len().saturating_sub(1));
+        self.view = View::Note;
+        self.panel = Panel::Main;
+        self.side_index = 2;
+        self.start_edit_note();
+    }
+
     pub fn create_type_char(&mut self, c: char) {
         self.create_buffer.push(c);
     }
@@ -508,34 +478,125 @@ impl App {
         }
     }
 
-    pub fn delete_selected(&mut self) {
-        if let Some(idx) = self.selected_todo_index() {
-            let todo = self.todos.remove(idx);
+    pub fn undo_delete(&mut self) {
+        if let UndoState::TodoDeleted(ref todo) = self.undo_state {
+            self.todos.push(todo.clone());
             storage::save(&self.storage_path, &self.todos);
-            self.clamp_selection();
-            self.undo_state = UndoState::TodoDeleted(todo);
+            self.selected_index = 0;
+            self.undo_state = UndoState::Inactive;
         }
     }
 
-    pub fn undo_delete(&mut self) {
-        let restored = match self.undo_state {
-            UndoState::TodoDeleted(ref todo) => {
-                self.todos.push(todo.clone());
-                storage::save(&self.storage_path, &self.todos);
-                self.selected_index = 0;
-                true
-            }
-            UndoState::NoteDeleted(ref note) => {
-                self.notes.push(note.clone());
-                self.notes.sort_by_key(|n| n.id);
-                storage::save_notes(&self.notes_path, &self.notes);
-                true
-            }
-            UndoState::Inactive => false,
-        };
-        if restored {
-            self.undo_state = UndoState::Inactive;
+    pub fn deletion_target_label(&self) -> String {
+        match self.panel {
+            Panel::Main => match self.view {
+                View::Note => self
+                    .current_note()
+                    .map(|n| n.title.clone())
+                    .unwrap_or_else(|| "this note".to_string()),
+                View::Notes => self
+                    .notes
+                    .get(self.selected_index)
+                    .map(|n| n.title.clone())
+                    .unwrap_or_else(|| "this note".to_string()),
+                View::Todos => format!(
+                    "todo #{}",
+                    self.selected_todo_index()
+                        .and_then(|i| self.todos.get(i))
+                        .map(|t| t.id.to_string())
+                        .unwrap_or_else(|| "?".to_string())
+                ),
+            },
+            Panel::Sidebar => match self.side_index {
+                0 => "all active todos? (not implemented)".to_string(),
+                1 => "all archived todos? (not implemented)".to_string(),
+                2 => self
+                    .current_note()
+                    .map(|n| n.title.clone())
+                    .unwrap_or_else(|| "this note".to_string()),
+                _ => "this item".to_string(),
+            },
         }
+    }
+
+    pub fn start_deletion(&mut self) {
+        self.input_mode = InputMode::ConfirmDelete;
+        self.confirm_selection = 0;
+    }
+
+    pub fn confirm_move_left(&mut self) {
+        self.confirm_selection = 0;
+    }
+
+    pub fn confirm_move_right(&mut self) {
+        self.confirm_selection = 1;
+    }
+
+    pub fn confirm_delete(&mut self) {
+        if self.confirm_selection == 1 {
+            match self.panel {
+                Panel::Main => match self.view {
+                    View::Note => {
+                        if let Some(idx) = self.current_note_index {
+                            self.notes.remove(idx);
+                            self.current_note_index = None;
+                            if self.notes.is_empty() {
+                                self.view = View::Notes;
+                            } else if idx >= self.notes.len() {
+                                self.current_note_index = Some(self.notes.len().saturating_sub(1));
+                            } else {
+                                self.current_note_index = Some(idx);
+                            }
+                            storage::save_notes(&self.notes_path, &self.notes);
+                        }
+                    }
+                    View::Notes => {
+                        let idx = self.selected_index;
+                        if idx < self.notes.len() {
+                            self.notes.remove(idx);
+                            if self.notes.is_empty() {
+                                self.view = View::Todos;
+                                self.selected_index = 0;
+                            } else if self.selected_index >= self.notes.len() {
+                                self.selected_index = self.notes.len().saturating_sub(1);
+                            }
+                            self.current_note_index = None;
+                            storage::save_notes(&self.notes_path, &self.notes);
+                        }
+                    }
+                    View::Todos => {
+                        if let Some(idx) = self.selected_todo_index() {
+                            let todo = self.todos.remove(idx);
+                            storage::save(&self.storage_path, &self.todos);
+                            self.clamp_selection();
+                            self.undo_state = UndoState::TodoDeleted(todo);
+                        }
+                    }
+                },
+                Panel::Sidebar => match self.side_index {
+                    2 => {
+                        if let Some(idx) = self.current_note_index {
+                            self.notes.remove(idx);
+                            self.current_note_index = None;
+                            if self.notes.is_empty() {
+                                self.view = View::Todos;
+                            } else if idx >= self.notes.len() {
+                                self.current_note_index = Some(self.notes.len().saturating_sub(1));
+                            } else {
+                                self.current_note_index = Some(idx);
+                            }
+                            storage::save_notes(&self.notes_path, &self.notes);
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn cancel_confirm(&mut self) {
+        self.input_mode = InputMode::Normal;
     }
 
     pub fn clear_undo(&mut self) {
@@ -568,13 +629,14 @@ impl App {
         let notes = storage::load_notes(&self.notes_path);
         self.notes = notes;
 
-        let count = self.side_count();
-        if self.side_index >= count {
-            self.side_index = count.saturating_sub(1);
+        if self.side_index > 2 {
+            self.side_index = 2;
         }
 
-        if matches!(self.input_mode, InputMode::Palette) {
-            self.refresh_palette();
+        if let Some(idx) = self.current_note_index {
+            if idx >= self.notes.len() {
+                self.current_note_index = self.notes.len().checked_sub(1);
+            }
         }
     }
 
@@ -603,181 +665,25 @@ impl App {
     }
 
     pub fn select_sidebar(&mut self) {
-        let items = self.side_items();
-        match items.get(self.side_index) {
-            Some(SideItem::Active(_)) => {
+        match self.side_index {
+            0 => {
                 self.view = View::Todos;
                 self.show_archived = false;
                 self.panel = Panel::Main;
                 self.selected_index = 0;
             }
-            Some(SideItem::Archive(_)) => {
+            1 => {
                 self.view = View::Todos;
                 self.show_archived = true;
                 self.panel = Panel::Main;
                 self.selected_index = 0;
             }
-            Some(SideItem::Note(..)) => {
-                self.view = View::Note;
+            2 => {
+                self.view = View::Notes;
                 self.panel = Panel::Main;
-                self.note_view_max_scroll = 0;
-                self.start_edit_note();
+                self.selected_index = 0;
             }
             _ => {}
-        }
-    }
-
-    pub fn delete_note_by_side_index(&mut self) {
-        let note_idx = {
-            let items = self.side_items();
-            match items.get(self.side_index) {
-                Some(SideItem::Note(id, _)) => match self.notes.iter().position(|n| n.id == *id) {
-                    Some(idx) => idx,
-                    None => return,
-                },
-                _ => return,
-            }
-        };
-        let note = self.notes.remove(note_idx);
-        if self.side_index >= self.side_count() && self.side_index > 0 {
-            self.side_index -= 1;
-        }
-        if self.notes.is_empty() && self.side_index == 0 {
-            self.view = View::Todos;
-        }
-        storage::save_notes(&self.notes_path, &self.notes);
-        self.undo_state = UndoState::NoteDeleted(note);
-    }
-
-    pub fn start_rename(&mut self) {
-        let items = self.side_items();
-        if let Some(SideItem::Note(_, title)) = items.get(self.side_index) {
-            self.rename_buffer = title.clone();
-            self.input_mode = InputMode::Renaming;
-        }
-    }
-
-    pub fn confirm_rename(&mut self) {
-        let new_title = self.rename_buffer.trim().to_string();
-        if new_title.is_empty() {
-            self.cancel_rename();
-            return;
-        }
-        let note_id = {
-            let items = self.side_items();
-            match items.get(self.side_index) {
-                Some(SideItem::Note(id, _)) => *id,
-                _ => {
-                    self.cancel_rename();
-                    return;
-                }
-            }
-        };
-        if let Some(note) = self.notes.iter_mut().find(|n| n.id == note_id) {
-            note.title = new_title;
-            note.updated_at = Local::now().naive_local();
-            storage::save_notes(&self.notes_path, &self.notes);
-        }
-        self.input_mode = InputMode::Normal;
-        self.rename_buffer.clear();
-    }
-
-    pub fn cancel_rename(&mut self) {
-        self.input_mode = InputMode::Normal;
-        self.rename_buffer.clear();
-    }
-
-    pub fn rename_type_char(&mut self, c: char) {
-        self.rename_buffer.push(c);
-    }
-
-    pub fn rename_backspace(&mut self) {
-        self.rename_buffer.pop();
-    }
-
-    pub fn duplicate_note_by_side_index(&mut self) {
-        let original = {
-            let items = self.side_items();
-            match items.get(self.side_index) {
-                Some(SideItem::Note(id, _)) => match self.notes.iter().find(|n| n.id == *id) {
-                    Some(n) => n.clone(),
-                    None => return,
-                },
-                _ => return,
-            }
-        };
-        let new_title = if original.title.is_empty() {
-            String::new()
-        } else {
-            format!("{} (copy)", original.title)
-        };
-        let now = Local::now().naive_local();
-        let new_id = storage::next_id();
-        self.notes.push(Note {
-            id: new_id,
-            title: new_title,
-            content: original.content,
-            created_at: now,
-            updated_at: now,
-        });
-        self.notes.sort_by_key(|n| n.id);
-        storage::save_notes(&self.notes_path, &self.notes);
-        let items = self.side_items();
-        if let Some(pos) = items
-            .iter()
-            .position(|item| matches!(item, SideItem::Note(id, _) if *id == new_id))
-        {
-            self.side_index = pos;
-        }
-    }
-
-    pub fn start_note_search(&mut self) {
-        self.note_search_buffer.clear();
-        self.input_mode = InputMode::NoteSearch;
-    }
-
-    pub fn apply_note_search(&mut self) {
-        let query = self.note_search_buffer.trim().to_string();
-        if query.is_empty() {
-            self.note_search_filter = None;
-        } else {
-            self.note_search_filter = Some(query);
-        }
-        self.input_mode = InputMode::Normal;
-        if self.side_index >= self.side_count() {
-            self.side_index = self.side_count().saturating_sub(1);
-        }
-    }
-
-    pub fn cancel_note_search(&mut self) {
-        self.note_search_buffer.clear();
-        self.note_search_filter = None;
-        self.input_mode = InputMode::Normal;
-    }
-
-    pub fn note_search_buffer_push(&mut self, c: char) {
-        self.note_search_buffer.push(c);
-        let query = self.note_search_buffer.trim();
-        if query.is_empty() {
-            self.note_search_filter = None;
-        } else {
-            self.note_search_filter = Some(query.to_string());
-        }
-        if self.side_index >= self.side_count() {
-            self.side_index = self.side_count().saturating_sub(1);
-        }
-    }
-
-    pub fn note_search_buffer_pop(&mut self) {
-        self.note_search_buffer.pop();
-        let query = self.note_search_buffer.trim();
-        if query.is_empty() {
-            self.note_search_filter = None;
-        } else {
-            self.note_search_filter = Some(query.to_string());
-        }
-        if self.side_index >= self.side_count() {
-            self.side_index = self.side_count().saturating_sub(1);
         }
     }
 
@@ -811,108 +717,6 @@ impl App {
 
     pub fn note_scroll_bottom(&mut self) {
         self.note_scroll = self.note_view_max_scroll;
-    }
-
-    pub fn open_palette(&mut self) {
-        self.input_mode = InputMode::Palette;
-        self.palette_query.clear();
-        self.palette_selected = 0;
-        self.refresh_palette();
-    }
-
-    pub fn close_palette(&mut self) {
-        self.input_mode = InputMode::Normal;
-        self.palette_query.clear();
-        self.palette_items.clear();
-        self.palette_selected = 0;
-    }
-
-    pub fn palette_type_char(&mut self, c: char) {
-        self.palette_query.push(c);
-        self.palette_selected = 0;
-        self.refresh_palette();
-    }
-
-    pub fn palette_backspace(&mut self) {
-        self.palette_query.pop();
-        self.palette_selected = 0;
-        self.refresh_palette();
-    }
-
-    pub fn palette_move_up(&mut self) {
-        if self.palette_selected > 0 {
-            self.palette_selected -= 1;
-        }
-    }
-
-    pub fn palette_move_down(&mut self) {
-        if self.palette_selected + 1 < self.palette_items.len() {
-            self.palette_selected += 1;
-        }
-    }
-
-    pub fn palette_select(&mut self) {
-        let action = self
-            .palette_items
-            .get(self.palette_selected)
-            .map(|item| match &item.action {
-                PaletteAction::OpenNote(id) => PaletteAction::OpenNote(*id),
-                PaletteAction::CreateNote(title) => PaletteAction::CreateNote(title.clone()),
-                PaletteAction::CreateTodo(desc) => PaletteAction::CreateTodo(desc.clone()),
-            });
-
-        match action {
-            Some(PaletteAction::OpenNote(id)) => {
-                self.close_palette();
-                self.view = View::Note;
-                self.panel = Panel::Main;
-                self.note_mode = NoteMode::Viewing;
-                self.note_scroll = 0;
-                self.note_view_max_scroll = 0;
-                let items = self.side_items();
-                if let Some(idx) = items
-                    .iter()
-                    .position(|item| matches!(item, SideItem::Note(note_id, _) if *note_id == id))
-                {
-                    self.side_index = idx;
-                }
-            }
-            Some(PaletteAction::CreateNote(title)) => {
-                self.close_palette();
-                let now = Local::now().naive_local();
-                let content = if title.is_empty() {
-                    String::new()
-                } else {
-                    format!("# {}\n", title)
-                };
-                let note = Note {
-                    id: storage::next_id(),
-                    title: extract_title(&content),
-                    content,
-                    created_at: now,
-                    updated_at: now,
-                };
-                self.notes.push(note);
-                self.notes.sort_by_key(|n| n.id);
-                storage::save_notes(&self.notes_path, &self.notes);
-                self.view = View::Note;
-                self.panel = Panel::Main;
-                self.side_index = 2 + self.notes.len().saturating_sub(1);
-                self.start_edit_note();
-            }
-            Some(PaletteAction::CreateTodo(desc)) => {
-                self.close_palette();
-                let desc = desc.trim().to_string();
-                if !desc.is_empty() {
-                    self.push_todo(desc);
-                }
-                self.view = View::Todos;
-                self.show_archived = false;
-                self.panel = Panel::Main;
-                self.selected_index = 0;
-            }
-            None => {}
-        }
     }
 
     pub fn start_search(&mut self) {
@@ -961,83 +765,6 @@ impl App {
         }
         self.clamp_selection();
     }
-
-    pub fn refresh_palette(&mut self) {
-        let query = self.palette_query.trim();
-        let mut items: Vec<PaletteItem> = Vec::new();
-
-        let candidates: Vec<String> = self
-            .notes
-            .iter()
-            .map(|n| format!("{} {}", n.title, preview(&n.content)))
-            .collect();
-        let matches = crate::fuzzy::filter(query, &candidates);
-
-        for (note_idx, m) in matches {
-            let note = &self.notes[note_idx];
-            let title_matches: Vec<usize> = if query.is_empty() {
-                Vec::new()
-            } else {
-                crate::fuzzy::fuzzy_match(query, &note.title)
-                    .map(|fm| fm.indices)
-                    .unwrap_or_default()
-            };
-            items.push(PaletteItem {
-                title: note.title.clone(),
-                subtitle: preview(&note.content),
-                icon: '\u{1F4DD}',
-                action: PaletteAction::OpenNote(note.id),
-                score: m.score,
-                matches: title_matches,
-            });
-        }
-
-        if !query.is_empty() {
-            let create_score = 1000_i64;
-            items.push(PaletteItem {
-                title: format!("Create note: {}", query),
-                subtitle: "Start a new note".to_string(),
-                icon: '\u{2728}',
-                action: PaletteAction::CreateNote(query.to_string()),
-                score: create_score,
-                matches: Vec::new(),
-            });
-            items.push(PaletteItem {
-                title: format!("Create todo: {}", query),
-                subtitle: "Add a new todo".to_string(),
-                icon: '\u{2705}',
-                action: PaletteAction::CreateTodo(query.to_string()),
-                score: create_score - 1,
-                matches: Vec::new(),
-            });
-        }
-
-        if query.is_empty() {
-            items.sort_by_key(|item| match &item.action {
-                PaletteAction::OpenNote(id) => *id,
-                _ => u64::MAX,
-            });
-        } else {
-            items.sort_by_key(|b| std::cmp::Reverse(b.score));
-        }
-
-        self.palette_items = items;
-        self.palette_selected = self
-            .palette_selected
-            .min(self.palette_items.len().saturating_sub(1));
-    }
-}
-
-fn preview(content: &str) -> String {
-    content
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .chars()
-        .take(80)
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 fn extract_title(content: &str) -> String {

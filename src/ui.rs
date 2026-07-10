@@ -29,24 +29,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match (&app.view, &app.note_mode) {
         (View::Note, NoteMode::Editing) => render_note_editor(frame, main_area, app),
         (View::Note, NoteMode::Viewing) => render_note_view(frame, main_area, app),
+        (View::Notes, _) => render_note_list(frame, main_area, app),
         _ => render_list(frame, main_area, app),
     }
     render_footer(frame, footer_area, app);
-
-    if matches!(app.input_mode, InputMode::Palette) {
-        render_palette(frame, area, app);
-    }
 
     if matches!(app.input_mode, InputMode::Search) {
         render_search_bar(frame, area, app);
     }
 
-    if matches!(app.input_mode, InputMode::Renaming) {
-        render_rename_bar(frame, area, app);
-    }
-
-    if matches!(app.input_mode, InputMode::NoteSearch) {
-        render_note_search_bar(frame, area, app);
+    if matches!(app.input_mode, InputMode::ConfirmDelete) {
+        render_confirm_delete(frame, area, app);
     }
 
     if app.undo_state.is_active() && matches!(app.input_mode, InputMode::Normal) {
@@ -58,6 +51,7 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
     let label = match (&app.view, &app.note_mode) {
         (View::Note, NoteMode::Editing) => "Editing",
         (View::Note, _) => "Note",
+        (View::Notes, _) => "Notes",
         (View::Todos, _) if app.show_archived => "Archived",
         _ => "Todos",
     };
@@ -110,11 +104,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         .map(|(i, item)| {
             let is_focused = app.panel == Panel::Sidebar;
             let is_selected = is_focused && i == app.side_index;
-            let is_active = match item {
-                SideItem::Active(a) if !is_focused => *a,
-                SideItem::Archive(a) if !is_focused => *a,
-                _ => false,
-            };
+            let is_active = !is_focused && item.is_active(&app.view, app.show_archived);
             let cursor = if is_selected { "▸ " } else { "  " };
             let style = if is_selected {
                 Style::default().bg(Color::Rgb(35, 40, 48)).bold()
@@ -124,27 +114,16 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default()
             };
 
-            let line = match item {
-                SideItem::Active(_) => Line::from(vec![
-                    Span::styled(cursor, Style::default().fg(Color::Cyan)),
-                    Span::styled("📋 Todos", style),
-                ]),
-                SideItem::Archive(_) => Line::from(vec![
-                    Span::styled(cursor, Style::default().fg(Color::Cyan)),
-                    Span::styled("📦 Archive", style),
-                ]),
-                SideItem::NotesHeader(count) => {
-                    let label = format!("  Notes ({}) ", count);
-                    Line::from(vec![Span::styled(
-                        label,
-                        Style::default().fg(Color::Cyan).bold(),
-                    )])
-                }
-                SideItem::Note(_, title) => Line::from(vec![
-                    Span::styled(cursor, Style::default().fg(Color::Cyan)),
-                    Span::styled(format!("📝 {}", title), style),
-                ]),
+            let (icon, label, count) = match item {
+                SideItem::Todos(c) => ("📋", "Todos", *c),
+                SideItem::Archive(c) => ("📦", "Archive", *c),
+                SideItem::Notes(c) => ("📝", "Notes", *c),
             };
+
+            let line = Line::from(vec![
+                Span::styled(cursor, Style::default().fg(Color::Cyan)),
+                Span::styled(format!("{} {} ({})", icon, label, count), style),
+            ]);
             ListItem::new(line)
         })
         .collect();
@@ -364,6 +343,108 @@ fn render_list_empty(frame: &mut Frame, area: Rect, border_color: Color, app: &A
     frame.render_widget(paragraph, content_area);
 }
 
+fn render_note_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    let border_color = if app.panel == Panel::Main {
+        Color::Yellow
+    } else {
+        Color::Cyan
+    };
+
+    let list_height = area.height.saturating_sub(2) as usize;
+
+    if app.notes.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Notes ")
+            .border_style(Style::default().fg(border_color));
+        frame.render_widget(block.clone(), area);
+        let inner = block.inner(area);
+        let vertical = Layout::vertical([
+            Constraint::Percentage(50),
+            Constraint::Length(4),
+            Constraint::Percentage(50),
+        ]);
+        let [_, content_area, _] = vertical.areas(inner);
+        let paragraph = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "No notes yet",
+                Style::default().fg(Color::White).bold(),
+            )]),
+            Line::from(vec![Span::styled(
+                "Press 'c' to create one",
+                Style::default().fg(Color::DarkGray),
+            )]),
+        ])
+        .alignment(Alignment::Center);
+        frame.render_widget(paragraph, content_area);
+        return;
+    }
+
+    let count = app.notes.len();
+
+    let sel = app.selected_index.min(count.saturating_sub(1));
+
+    let max_scroll = count.saturating_sub(list_height);
+    if sel < app.list_scroll {
+        app.list_scroll = sel;
+    } else if sel >= app.list_scroll + list_height {
+        app.list_scroll = sel.saturating_sub(list_height).saturating_add(1);
+    }
+    app.list_scroll = app.list_scroll.min(max_scroll);
+
+    let items: Vec<ListItem> = app
+        .notes
+        .iter()
+        .enumerate()
+        .skip(app.list_scroll)
+        .take(list_height)
+        .map(|(i, note)| {
+            let is_selected = app.panel == Panel::Main && i == sel;
+            let prefix = if is_selected { "▸" } else { " " };
+            let title = if note.title.is_empty() {
+                "Untitled"
+            } else {
+                &note.title
+            };
+            let preview = preview_note(&note.content);
+            let date = note.created_at.format("%m-%d %H:%M").to_string();
+
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{} ", prefix),
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::styled(format!("📝 {}", title), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("  {}", preview),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
+            ]);
+
+            let item_style = if is_selected {
+                Style::default().bg(Color::Rgb(35, 40, 48))
+            } else {
+                Style::default()
+            };
+            ListItem::new(line).style(item_style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                format!(" Notes ({}) ", count),
+                Style::default().fg(Color::White),
+            ))
+            .border_style(Style::default().fg(border_color)),
+    );
+
+    frame.render_widget(list, area);
+}
+
 fn render_note_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let border_color = if app.panel == Panel::Main {
         Color::Yellow
@@ -535,115 +616,6 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn render_palette(frame: &mut Frame, area: Rect, app: &App) {
-    let popup = centered_rect(area, 80, 70);
-    frame.render_widget(Clear, popup);
-
-    let title = " Command Palette ";
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            title,
-            Style::default().fg(Color::White).bold(),
-        ))
-        .border_style(Style::default().fg(Color::Yellow));
-    frame.render_widget(block.clone(), popup);
-
-    let inner = block.inner(popup);
-    let vertical = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ]);
-    let [input_area, list_area, hint_area] = vertical.areas(inner);
-
-    let input_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-    let input_inner = input_block.inner(input_area);
-    frame.render_widget(input_block, input_area);
-    let input_text = Paragraph::new(Line::from(vec![
-        Span::styled("> ", Style::default().fg(Color::Cyan).bold()),
-        Span::raw(&app.palette_query),
-    ]));
-    frame.render_widget(input_text, input_inner);
-
-    if app.palette_items.is_empty() {
-        let empty = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Type to search or create",
-                Style::default().fg(Color::DarkGray),
-            )]),
-        ])
-        .alignment(Alignment::Center);
-        frame.render_widget(empty, list_area);
-    } else {
-        let items: Vec<ListItem> = app
-            .palette_items
-            .iter()
-            .enumerate()
-            .map(|(i, item)| {
-                let is_selected = i == app.palette_selected;
-                let bg = if is_selected {
-                    Style::default().bg(Color::Rgb(35, 40, 48))
-                } else {
-                    Style::default()
-                };
-
-                let mut spans: Vec<Span> = Vec::new();
-                let prefix = if is_selected { "▸ " } else { "  " };
-                spans.push(Span::styled(
-                    prefix,
-                    Style::default().fg(Color::Cyan).bold(),
-                ));
-                spans.push(Span::styled(format!("{} ", item.icon), Style::default()));
-
-                let highlighted = crate::fuzzy::highlight(&item.title, &item.matches);
-                for (segment, is_match) in highlighted.segments {
-                    let style = if is_match {
-                        Style::default().fg(Color::Cyan).bold()
-                    } else {
-                        Style::default().fg(Color::White)
-                    };
-                    spans.push(Span::styled(segment, style));
-                }
-
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    item.subtitle.clone(),
-                    Style::default().fg(Color::DarkGray),
-                ));
-
-                let line = Line::from(spans);
-                ListItem::new(line).style(bg)
-            })
-            .collect();
-
-        let list = List::new(items).block(
-            Block::default()
-                .borders(Borders::NONE)
-                .title(Span::styled(
-                    format!(" {} results ", app.palette_items.len()),
-                    Style::default().fg(Color::DarkGray),
-                ))
-                .title_alignment(Alignment::Right),
-        );
-        frame.render_widget(list, list_area);
-    }
-
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled("↑/↓ ", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("nav  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
-        Span::styled("select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc ", Style::default().fg(Color::Red).bold()),
-        Span::styled("close", Style::default().fg(Color::DarkGray)),
-    ]));
-    frame.render_widget(hint, hint_area);
-}
-
 fn render_search_bar(frame: &mut Frame, area: Rect, app: &App) {
     let popup = Rect::new(
         area.x + 2,
@@ -681,68 +653,93 @@ fn render_search_bar(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn render_rename_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let popup = Rect::new(
-        area.x + 2,
-        area.y + area.height.saturating_sub(4),
-        area.width.saturating_sub(4),
-        3,
-    );
+fn render_confirm_delete(frame: &mut Frame, area: Rect, app: &App) {
+    let label = app.deletion_target_label();
+    let popup = centered_rect(area, 60, 35);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
-            " Rename ",
-            Style::default().fg(Color::Cyan).bold(),
+            " Confirm Delete ",
+            Style::default().fg(Color::Red).bold(),
         ))
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(Color::Red));
     frame.render_widget(block.clone(), popup);
 
     let inner = block.inner(popup);
-    let input_text = Line::from(vec![
-        Span::styled("> ", Style::default().fg(Color::Cyan).bold()),
-        Span::raw(&app.rename_buffer),
-        Span::styled("\u{258E}", Style::default().fg(Color::Yellow)),
+    let v = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(3),
     ]);
-    frame.render_widget(Paragraph::new(vec![input_text]), inner);
-}
+    let [msg_area, _, buttons_area] = v.areas(inner);
 
-fn render_note_search_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let popup = Rect::new(
-        area.x + 2,
-        area.y + area.height.saturating_sub(4),
-        area.width.saturating_sub(4),
-        3,
-    );
-    frame.render_widget(Clear, popup);
+    let msg = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            format!("Delete: \"{}\"", label),
+            Style::default().fg(Color::White),
+        )]),
+    ])
+    .alignment(Alignment::Center);
+    frame.render_widget(msg, msg_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            " Note Search ",
-            Style::default().fg(Color::Cyan).bold(),
-        ))
-        .border_style(Style::default().fg(Color::Yellow));
-    frame.render_widget(block.clone(), popup);
+    let cancel_style = if app.confirm_selection == 0 {
+        Style::default()
+            .bg(Color::Rgb(60, 60, 60))
+            .fg(Color::White)
+            .bold()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let delete_style = if app.confirm_selection == 1 {
+        Style::default()
+            .bg(Color::Rgb(180, 40, 40))
+            .fg(Color::White)
+            .bold()
+    } else {
+        Style::default().fg(Color::Red)
+    };
 
-    let inner = block.inner(popup);
-    let input_text = Line::from(vec![
-        Span::styled("/", Style::default().fg(Color::Magenta).bold()),
-        Span::raw(&app.note_search_buffer),
-        Span::styled("\u{258E}", Style::default().fg(Color::Yellow)),
+    let cancel_arrow = if app.confirm_selection == 0 {
+        "▶ "
+    } else {
+        "  "
+    };
+    let delete_arrow = if app.confirm_selection == 1 {
+        "▶ "
+    } else {
+        "  "
+    };
+
+    let buttons = Line::from(vec![
+        Span::styled(format!("{}Cancel", cancel_arrow), cancel_style),
+        Span::raw("    "),
+        Span::styled(format!("{}Delete", delete_arrow), delete_style),
     ]);
     frame.render_widget(
-        Paragraph::new(if app.note_search_buffer.is_empty() {
-            vec![Line::from(vec![
-                Span::styled("/", Style::default().fg(Color::Magenta).bold()),
-                Span::styled("type to filter notes", Style::default().fg(Color::DarkGray)),
-            ])]
-        } else {
-            vec![input_text]
-        }),
-        inner,
+        Paragraph::new(buttons).alignment(Alignment::Center),
+        buttons_area,
     );
+
+    let hint = Rect {
+        y: buttons_area.y + buttons_area.height.saturating_sub(1),
+        height: 1,
+        ..buttons_area
+    };
+    if hint.y < area.y + area.height {
+        let hint_text = Paragraph::new(Line::from(vec![
+            Span::styled("←/→ ", Style::default().fg(Color::Cyan).bold()),
+            Span::styled("choose  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
+            Span::styled("confirm  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc ", Style::default().fg(Color::Red).bold()),
+            Span::styled("cancel", Style::default().fg(Color::DarkGray)),
+        ]))
+        .alignment(Alignment::Center);
+        frame.render_widget(hint_text, hint);
+    }
 }
 
 fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
@@ -803,16 +800,16 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw("todos  "),
                 Span::styled("a ", Style::default().fg(Color::Magenta).bold()),
                 Span::raw("archived  "),
-                Span::styled("n ", Style::default().fg(Color::Green).bold()),
-                Span::raw("palette  "),
+                Span::styled("n ", Style::default().fg(Color::Cyan).bold()),
+                Span::raw("notes  "),
                 Span::styled("c ", Style::default().fg(Color::Green).bold()),
                 Span::raw("create  "),
                 Span::styled("e ", Style::default().fg(Color::Blue).bold()),
                 Span::raw("edit  "),
                 Span::styled("d ", Style::default().fg(Color::Red).bold()),
                 Span::raw("delete  "),
-                Span::styled("/ ", Style::default().fg(Color::Magenta).bold()),
-                Span::raw("search  "),
+                Span::styled("/ s", Style::default().fg(Color::Magenta).bold()),
+                Span::raw(" search  "),
                 Span::styled("space ", Style::default().fg(Color::Yellow).bold()),
                 Span::raw("toggle  "),
                 Span::styled(
@@ -835,44 +832,21 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             ],
             Style::default(),
         ),
-        (InputMode::Palette, _) => (
-            vec![
-                Span::styled(
-                    "  Command palette ",
-                    Style::default().fg(Color::Green).bold(),
-                ),
-                Span::styled(
-                    "↑/↓ nav  Enter select  Esc close",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ],
-            Style::default(),
-        ),
-        (InputMode::NoteSearch, _) => (
-            vec![
-                Span::styled("  Note Search ", Style::default().fg(Color::Magenta).bold()),
-                Span::styled(
-                    "type to filter  Esc cancel  Enter confirm",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ],
-            Style::default(),
-        ),
-        (InputMode::Renaming, _) => (
-            vec![
-                Span::styled("  Rename ", Style::default().fg(Color::Cyan).bold()),
-                Span::styled(
-                    "type new name  Esc cancel  Enter confirm",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ],
-            Style::default(),
-        ),
         (InputMode::Creating, _) => (
             vec![
                 Span::styled("  Creating ", Style::default().fg(Color::Green).bold()),
                 Span::styled(
                     "Enter:save  Esc:cancel",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+            Style::default(),
+        ),
+        (InputMode::ConfirmDelete, _) => (
+            vec![
+                Span::styled("  Confirm ", Style::default().fg(Color::Red).bold()),
+                Span::styled(
+                    "←/→ choose  Enter confirm  Esc cancel",
                     Style::default().fg(Color::DarkGray),
                 ),
             ],
@@ -896,4 +870,16 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let inner = footer.inner(area);
     frame.render_widget(footer, area);
     frame.render_widget(Paragraph::new(Line::from(text)).style(style), inner);
+}
+
+fn preview_note(content: &str) -> String {
+    content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(60)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }

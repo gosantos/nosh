@@ -1,5 +1,4 @@
 mod app;
-mod fuzzy;
 mod markdown;
 mod storage;
 mod ui;
@@ -398,6 +397,17 @@ fn run_notes_cmd(cmd: NotesCommand) {
     }
 }
 
+fn handle_confirm_delete_event(app: &mut App, code: KeyCode) -> io::Result<()> {
+    match code {
+        KeyCode::Esc => app.cancel_confirm(),
+        KeyCode::Enter => app.confirm_delete(),
+        KeyCode::Left | KeyCode::Char('h') => app.confirm_move_left(),
+        KeyCode::Right | KeyCode::Char('l') => app.confirm_move_right(),
+        _ => {}
+    }
+    Ok(())
+}
+
 fn run_tui() -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -473,16 +483,12 @@ fn handle_event(app: &mut App) -> io::Result<()> {
             return Ok(());
         }
 
+        if matches!(app.input_mode, InputMode::ConfirmDelete) {
+            return handle_confirm_delete_event(app, key.code);
+        }
+
         if matches!(app.input_mode, InputMode::Search) {
             return handle_search_event(app, key.code);
-        }
-
-        if matches!(app.input_mode, InputMode::NoteSearch) {
-            return handle_note_search_event(app, key.code);
-        }
-
-        if matches!(app.input_mode, InputMode::Renaming) {
-            return handle_rename_event(app, key.code);
         }
 
         if matches!(app.input_mode, InputMode::Creating) {
@@ -540,10 +546,16 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.show_archived = true;
                     app.selected_index = 0;
                 }
-                KeyCode::Char('n') => app.open_palette(),
-                KeyCode::Char('c') => {
-                    app.start_creating();
+                KeyCode::Char('n') => {
+                    app.view = View::Notes;
+                    app.panel = Panel::Main;
+                    app.selected_index = 0;
                 }
+                KeyCode::Char('s') => app.start_search(),
+                KeyCode::Char('c') => {
+                    app.start_creating_note();
+                }
+                KeyCode::Char('d') => app.start_deletion(),
                 KeyCode::Down | KeyCode::Char('j') => app.note_scroll_down(),
                 KeyCode::Up | KeyCode::Char('k') => app.note_scroll_up(),
                 KeyCode::PageDown => app.note_scroll_page_down(),
@@ -564,7 +576,12 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.show_archived = true;
                     app.selected_index = 0;
                 }
-                KeyCode::Char('n') => app.open_palette(),
+                KeyCode::Char('n') => {
+                    app.view = View::Notes;
+                    app.panel = Panel::Main;
+                    app.selected_index = 0;
+                }
+                KeyCode::Char('s') => app.start_search(),
                 KeyCode::Char('c') => {
                     app.start_creating();
                 }
@@ -573,10 +590,62 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 }
                 KeyCode::Char('/') => app.start_search(),
                 KeyCode::Char('A') => app.archive_selected(),
-                KeyCode::Char('d') => app.delete_selected(),
+                KeyCode::Char('d') => app.start_deletion(),
                 KeyCode::Char(' ') => app.toggle_done(),
                 KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                KeyCode::Tab => app.panel = Panel::Sidebar,
+                KeyCode::Esc => {
+                    if app.search_filter.is_some() {
+                        app.search_filter = None;
+                        app.search_buffer.clear();
+                    } else {
+                        app.should_quit = true;
+                    }
+                }
+                _ => {}
+            },
+
+            (InputMode::Normal, _, Panel::Main, View::Notes) => match key.code {
+                KeyCode::Char('q') => app.should_quit = true,
+                KeyCode::Char('t') => {
+                    app.view = View::Todos;
+                    app.show_archived = false;
+                    app.selected_index = 0;
+                }
+                KeyCode::Char('a') => {
+                    app.view = View::Todos;
+                    app.show_archived = true;
+                    app.selected_index = 0;
+                }
+                KeyCode::Char('n') => {
+                    app.selected_index = 0;
+                }
+                KeyCode::Char('s') => app.start_search(),
+                KeyCode::Char('/') => app.start_search(),
+                KeyCode::Char('c') => {
+                    app.start_creating_note();
+                }
+                KeyCode::Char('d') => app.start_deletion(),
+                KeyCode::Enter => {
+                    if app.selected_index < app.notes.len() {
+                        app.current_note_index = Some(app.selected_index);
+                        app.view = View::Note;
+                        app.note_mode = NoteMode::Viewing;
+                        app.note_scroll = 0;
+                        app.note_view_max_scroll = 0;
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if app.selected_index > 0 {
+                        app.selected_index -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if app.selected_index + 1 < app.notes.len() {
+                        app.selected_index += 1;
+                    }
+                }
                 KeyCode::Tab => app.panel = Panel::Sidebar,
                 KeyCode::Esc => {
                     if app.search_filter.is_some() {
@@ -606,27 +675,24 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.selected_index = 0;
                     app.panel = Panel::Main;
                 }
-                KeyCode::Char('n') => app.open_palette(),
-                KeyCode::Char('c') => {
-                    app.start_creating();
+                KeyCode::Char('n') => {
+                    app.view = View::Notes;
+                    app.panel = Panel::Main;
+                    app.selected_index = 0;
                 }
-                KeyCode::Char('d') => app.delete_note_by_side_index(),
-                KeyCode::Char('r') => app.start_rename(),
-                KeyCode::Char('y') => app.duplicate_note_by_side_index(),
-                KeyCode::Char('/') => app.start_note_search(),
+                KeyCode::Char('s') => app.start_search(),
+                KeyCode::Char('c') => {
+                    if app.side_index == 2 {
+                        app.start_creating_note();
+                    } else {
+                        app.start_creating();
+                    }
+                }
+                KeyCode::Char('d') => app.start_deletion(),
                 KeyCode::Tab | KeyCode::Esc => app.panel = Panel::Main,
                 _ => {}
             },
 
-            (InputMode::Palette, _, _, _) => match key.code {
-                KeyCode::Esc => app.close_palette(),
-                KeyCode::Enter => app.palette_select(),
-                KeyCode::Up | KeyCode::Char('k') => app.palette_move_up(),
-                KeyCode::Down | KeyCode::Char('j') => app.palette_move_down(),
-                KeyCode::Backspace => app.palette_backspace(),
-                KeyCode::Char(c) => app.palette_type_char(c),
-                _ => {}
-            },
             _ => {}
         }
     }
@@ -639,28 +705,6 @@ fn handle_search_event(app: &mut App, code: KeyCode) -> io::Result<()> {
         KeyCode::Enter => app.apply_search(),
         KeyCode::Backspace => app.search_buffer_pop(),
         KeyCode::Char(c) => app.search_buffer_push(c),
-        _ => {}
-    }
-    Ok(())
-}
-
-fn handle_note_search_event(app: &mut App, code: KeyCode) -> io::Result<()> {
-    match code {
-        KeyCode::Esc => app.cancel_note_search(),
-        KeyCode::Enter => app.apply_note_search(),
-        KeyCode::Backspace => app.note_search_buffer_pop(),
-        KeyCode::Char(c) => app.note_search_buffer_push(c),
-        _ => {}
-    }
-    Ok(())
-}
-
-fn handle_rename_event(app: &mut App, code: KeyCode) -> io::Result<()> {
-    match code {
-        KeyCode::Esc => app.cancel_rename(),
-        KeyCode::Enter => app.confirm_rename(),
-        KeyCode::Backspace => app.rename_backspace(),
-        KeyCode::Char(c) => app.rename_type_char(c),
         _ => {}
     }
     Ok(())
