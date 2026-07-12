@@ -16,7 +16,7 @@ fmt:
 bump version:
     #!/usr/bin/env bash
     set -euo pipefail
-    version="$1"
+    version="{{version}}"
     current=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
 
     case "$version" in
