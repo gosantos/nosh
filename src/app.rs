@@ -1656,7 +1656,10 @@ mod tests {
         assert_eq!(app.notes[1].folder.as_deref(), Some("Work"));
         // Cursor stays on "b" in its new group.
         assert_eq!(app.selected_note_index(), Some(1));
-        assert_eq!(storage::load_notes(&app.notes_path)[1].folder.as_deref(), Some("Work"));
+        assert_eq!(
+            storage::load_notes(&app.notes_path)[1].folder.as_deref(),
+            Some("Work")
+        );
     }
 
     #[test]
@@ -1674,7 +1677,10 @@ mod tests {
         // Offers: existing "Work", then "+ New folder…" (note is unfiled → no
         // "No folder" choice).
         assert_eq!(app.folder_choices.len(), 2);
-        assert_eq!(app.folder_choices[0], FolderChoice::Existing("Work".to_string()));
+        assert_eq!(
+            app.folder_choices[0],
+            FolderChoice::Existing("Work".to_string())
+        );
         app.move_picker_select(); // Work
         assert_eq!(app.notes[1].folder.as_deref(), Some("Work"));
 
@@ -1796,10 +1802,7 @@ mod tests {
         app.view = View::Notes;
 
         // Empty folder header (count 0), then the unfiled note.
-        assert_eq!(
-            note_labels(&app),
-            vec!["#Work(0)", "#No folder(1)", "a"]
-        );
+        assert_eq!(note_labels(&app), vec!["#Work(0)", "#No folder(1)", "a"]);
 
         // And it is offered as a move target.
         app.start_move_note();
@@ -1812,7 +1815,10 @@ mod tests {
     fn delete_empty_folder_from_picker() {
         let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
         app.folders = vec!["Work".to_string()];
-        storage::save_folders(&app.storage_path.with_file_name("folders.json"), &app.folders);
+        storage::save_folders(
+            &app.storage_path.with_file_name("folders.json"),
+            &app.folders,
+        );
         app.view = View::Notes;
 
         app.start_move_note();

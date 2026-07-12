@@ -3,6 +3,9 @@ mod markdown;
 mod storage;
 mod ui;
 
+#[cfg(test)]
+mod e2e;
+
 use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -438,32 +441,39 @@ fn run_tui() -> io::Result<()> {
 
 fn handle_event(app: &mut App) -> io::Result<()> {
     if let Event::Key(key) = event::read()? {
-        if key.kind != KeyEventKind::Press {
-            return Ok(());
+        if key.kind == KeyEventKind::Press {
+            dispatch_key(app, key.code)?;
         }
+    }
+    Ok(())
+}
 
+/// Applies a single key press to the app. Split out from terminal reading so
+/// tests can drive the app with synthetic key codes.
+fn dispatch_key(app: &mut App, code: KeyCode) -> io::Result<()> {
+    {
         if matches!(app.input_mode, InputMode::ConfirmDelete) {
-            return handle_confirm_delete_event(app, key.code);
+            return handle_confirm_delete_event(app, code);
         }
 
         if matches!(app.input_mode, InputMode::MoveToFolder) {
-            return handle_move_folder_event(app, key.code);
+            return handle_move_folder_event(app, code);
         }
 
         if matches!(app.input_mode, InputMode::Search) {
-            return handle_search_event(app, key.code);
+            return handle_search_event(app, code);
         }
 
         if matches!(app.input_mode, InputMode::Creating) {
-            return handle_creating_event(app, key.code);
+            return handle_creating_event(app, code);
         }
 
         if matches!(app.input_mode, InputMode::Editing) {
-            return handle_editing_event(app, key.code);
+            return handle_editing_event(app, code);
         }
 
         if app.undo_state.is_active() && matches!(app.input_mode, InputMode::Normal) {
-            match key.code {
+            match code {
                 KeyCode::Char('u') => {
                     app.undo_delete();
                     return Ok(());
@@ -473,7 +483,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
         }
 
         match (&app.input_mode, &app.note_mode, &app.panel, &app.view) {
-            (InputMode::Normal, NoteMode::Editing, Panel::Main, View::Note) => match key.code {
+            (InputMode::Normal, NoteMode::Editing, Panel::Main, View::Note) => match code {
                 KeyCode::Esc => {
                     app.save_current_note();
                     app.note_mode = NoteMode::Viewing;
@@ -496,7 +506,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 _ => {}
             },
 
-            (InputMode::Normal, NoteMode::Viewing, Panel::Main, View::Note) => match key.code {
+            (InputMode::Normal, NoteMode::Viewing, Panel::Main, View::Note) => match code {
                 KeyCode::Char('q') => app.should_quit = true,
                 KeyCode::Char('e') | KeyCode::Char('i') => app.start_edit_note(),
                 KeyCode::Esc | KeyCode::Char('n') => app.back_to_notes_list(),
@@ -526,7 +536,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 _ => {}
             },
 
-            (InputMode::Normal, _, Panel::Main, View::Todos) => match key.code {
+            (InputMode::Normal, _, Panel::Main, View::Todos) => match code {
                 KeyCode::Char('q') => app.should_quit = true,
                 KeyCode::Char('t') => {
                     app.show_archived = false;
@@ -562,7 +572,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 _ => {}
             },
 
-            (InputMode::Normal, _, Panel::Main, View::Notes) => match key.code {
+            (InputMode::Normal, _, Panel::Main, View::Notes) => match code {
                 KeyCode::Char('q') => app.should_quit = true,
                 KeyCode::Char('t') => {
                     app.view = View::Todos;
@@ -603,7 +613,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 _ => {}
             },
 
-            (InputMode::Normal, _, Panel::Sidebar, _) => match key.code {
+            (InputMode::Normal, _, Panel::Sidebar, _) => match code {
                 KeyCode::Char('q') => app.should_quit = true,
                 KeyCode::Up | KeyCode::Char('k') => app.side_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.side_down(),
