@@ -161,6 +161,11 @@ fn gallery() {
     println!("{}", h.render());
     h.key(KeyCode::Esc);
 
+    banner("TODOS · undo toast (after delete)");
+    let mut u = sample();
+    u.ch('d').key(KeyCode::Right).key(KeyCode::Enter); // confirm delete
+    println!("{}", u.render());
+
     banner("EMPTY · no todos");
     let mut empty = Harness::new(vec![], vec![], vec![]);
     println!("{}", empty.render());

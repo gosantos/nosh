@@ -195,6 +195,7 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let total_entries = entries.len();
     let list_height = area.height.saturating_sub(2) as usize;
+    let inner_w = (area.width as usize).saturating_sub(2);
     let max_scroll = total_entries.saturating_sub(list_height);
 
     if selected_visual_pos < app.list_scroll {
@@ -283,14 +284,24 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App) {
                     let item_style = Style::default().bg(Color::Rgb(35, 40, 48));
                     items.push(ListItem::new(line).style(item_style));
                 } else {
+                    // Right-align the date; truncate the description to fit and
+                    // pad so the selection highlight spans the full row.
+                    let lead_w = 4; // "▸ " + "✓ "
+                    let date_w = date.chars().count();
+                    let desc = truncate(
+                        &todo.description,
+                        inner_w.saturating_sub(lead_w + date_w + 2),
+                    );
+                    let pad = inner_w.saturating_sub(lead_w + desc.chars().count() + date_w);
                     let line = Line::from(vec![
                         Span::styled(
-                            format!("{} ", prefix),
+                            format!("{prefix} "),
                             Style::default().fg(Color::Cyan).bold(),
                         ),
-                        Span::styled(format!("{} ", checkbox), Style::default().fg(check_color)),
-                        Span::styled(todo.description.clone(), desc_style),
-                        Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{checkbox} "), Style::default().fg(check_color)),
+                        Span::styled(desc, desc_style),
+                        Span::raw(" ".repeat(pad)),
+                        Span::styled(date, Style::default().fg(Color::DarkGray)),
                     ]);
 
                     let item_style = if is_selected {
@@ -566,12 +577,16 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &mut App) {
         &note.title
     };
     let title_text = match &note.folder {
-        Some(folder) => format!(" {} / {} ", folder, title),
-        None => format!(" {} ", title),
+        Some(folder) => format!(" {folder} / {title} "),
+        None => format!(" {title} "),
     };
+    let edited = format!(" edited {} ", note.updated_at.format("%b %d, %H:%M"));
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(title_text)
+        .title_top(Line::from(title_text))
+        .title_top(
+            Line::from(Span::styled(edited, Style::default().fg(Color::DarkGray))).right_aligned(),
+        )
         .border_style(Style::default().fg(border_color));
     frame.render_widget(block.clone(), area);
 
@@ -948,22 +963,31 @@ fn render_move_picker(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_undo_toast(frame: &mut Frame, area: Rect) {
-    let toast_y = area.y + area.height.saturating_sub(6);
-    let toast_rect = Rect::new(area.x + area.width / 5, toast_y, 3 * area.width / 5, 3);
-    frame.render_widget(Clear, toast_rect);
+    // A full-width bar over the footer row so its borders align with the
+    // screen edges (matches the search bar; no stray border fragments).
+    let bar = Rect::new(
+        area.x,
+        area.y + area.height.saturating_sub(3),
+        area.width,
+        3,
+    );
+    frame.render_widget(Clear, bar);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
-    frame.render_widget(block.clone(), toast_rect);
+    frame.render_widget(block.clone(), bar);
 
-    let inner = block.inner(toast_rect);
+    let inner = block.inner(bar);
     let text = Paragraph::new(Line::from(vec![
-        Span::styled(" Deleted. ", Style::default().fg(Color::Red).bold()),
+        Span::styled("  ✗ Deleted   ", Style::default().fg(Color::Red).bold()),
         Span::styled("u", Style::default().fg(Color::Yellow).bold()),
-        Span::raw(" to undo, any other key to dismiss"),
-    ]))
-    .alignment(Alignment::Center);
+        Span::styled(" undo", Style::default().fg(Color::Gray)),
+        Span::styled(
+            "   ·   any other key dismisses",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
     frame.render_widget(text, inner);
 }
 
