@@ -50,13 +50,13 @@ pub enum NoteMode {
     Editing,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Panel {
     Main,
     Sidebar,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum View {
     Todos,
     Note,
@@ -136,8 +136,7 @@ pub enum VisibleEntry {
     Todo(usize),
 }
 
-fn date_label(date: NaiveDate) -> String {
-    let today = Local::now().naive_local().date();
+fn date_label(date: NaiveDate, today: NaiveDate) -> String {
     if date == today {
         format!("Today (W{})", date.iso_week().week())
     } else if date == today - Duration::days(1) {
@@ -152,31 +151,27 @@ fn date_label(date: NaiveDate) -> String {
 }
 
 impl App {
+    fn matches_view(&self, todo: &Todo) -> bool {
+        todo.archived == self.show_archived
+            && self.search_filter.as_ref().is_none_or(|query| {
+                todo.description
+                    .to_lowercase()
+                    .contains(&query.to_lowercase())
+            })
+    }
+
     pub fn visible_entries(&self) -> Vec<VisibleEntry> {
+        let today = Local::now().naive_local().date();
         let mut entries = Vec::new();
         let mut prev_date: Option<NaiveDate> = None;
 
-        let filtered: Vec<(usize, &Todo)> = self
-            .todos
-            .iter()
-            .enumerate()
-            .rev()
-            .filter(|(_, t)| t.archived == self.show_archived)
-            .filter(|(_, t)| {
-                self.search_filter.as_ref().is_none_or(|query| {
-                    t.description.to_lowercase().contains(&query.to_lowercase())
-                })
-            })
-            .collect();
-
-        for (idx, todo) in &filtered {
-            let date = todo.created_at.date();
+        for idx in self.visible_indices() {
+            let date = self.todos[idx].created_at.date();
             if prev_date != Some(date) {
                 prev_date = Some(date);
-                let label = date_label(date);
-                entries.push(VisibleEntry::GroupHeader(label));
+                entries.push(VisibleEntry::GroupHeader(date_label(date, today)));
             }
-            entries.push(VisibleEntry::Todo(*idx));
+            entries.push(VisibleEntry::Todo(idx));
         }
 
         entries
@@ -225,7 +220,7 @@ impl App {
     }
 
     pub fn side_count(&self) -> usize {
-        3
+        self.side_items().len()
     }
 
     pub fn current_note(&self) -> Option<&Note> {
@@ -234,7 +229,7 @@ impl App {
 
     pub fn save_current_note(&mut self) {
         let content = self.note_lines.join("\n");
-        let title = extract_title(&content);
+        let title = storage::extract_title(&content);
         if let Some(note) = self.current_note_index.and_then(|i| self.notes.get_mut(i)) {
             note.content = content;
             note.title = title;
@@ -258,36 +253,38 @@ impl App {
         self.note_mode = NoteMode::Editing;
     }
 
+    /// `note_cursor_col` counts characters; string mutations need the
+    /// corresponding byte offset to stay on a char boundary.
+    fn current_line(&self) -> &str {
+        &self.note_lines[self.note_cursor_line]
+    }
+
     pub fn note_cursor_insert(&mut self, c: char) {
         if self.note_lines.is_empty() {
             self.note_lines.push(String::new());
         }
-        let line = &mut self.note_lines[self.note_cursor_line];
-        if self.note_cursor_col <= line.len() {
-            line.insert(self.note_cursor_col, c);
-        } else {
-            line.push(c);
-        }
+        let idx = byte_index(self.current_line(), self.note_cursor_col);
+        self.note_lines[self.note_cursor_line].insert(idx, c);
         self.note_cursor_col += 1;
     }
 
     pub fn note_cursor_backspace(&mut self) {
         if self.note_cursor_col > 0 {
-            let line = &mut self.note_lines[self.note_cursor_line];
-            line.remove(self.note_cursor_col - 1);
+            let idx = byte_index(self.current_line(), self.note_cursor_col - 1);
+            self.note_lines[self.note_cursor_line].remove(idx);
             self.note_cursor_col -= 1;
         } else if self.note_cursor_line > 0 {
             let below = self.note_lines.remove(self.note_cursor_line);
             self.note_cursor_line -= 1;
-            self.note_cursor_col = self.note_lines[self.note_cursor_line].len();
+            self.note_cursor_col = char_count(self.current_line());
             self.note_lines[self.note_cursor_line].push_str(&below);
         }
     }
 
     pub fn note_cursor_delete(&mut self) {
-        let line = &mut self.note_lines[self.note_cursor_line];
-        if self.note_cursor_col < line.len() {
-            line.remove(self.note_cursor_col);
+        if self.note_cursor_col < char_count(self.current_line()) {
+            let idx = byte_index(self.current_line(), self.note_cursor_col);
+            self.note_lines[self.note_cursor_line].remove(idx);
         } else if self.note_cursor_line + 1 < self.note_lines.len() {
             let next = self.note_lines.remove(self.note_cursor_line + 1);
             self.note_lines[self.note_cursor_line].push_str(&next);
@@ -298,12 +295,8 @@ impl App {
         if self.note_lines.is_empty() {
             self.note_lines.push(String::new());
         }
-        let line = &mut self.note_lines[self.note_cursor_line];
-        let rest = if self.note_cursor_col <= line.len() {
-            line.split_off(self.note_cursor_col)
-        } else {
-            String::new()
-        };
+        let idx = byte_index(self.current_line(), self.note_cursor_col);
+        let rest = self.note_lines[self.note_cursor_line].split_off(idx);
         self.note_cursor_line += 1;
         self.note_lines.insert(self.note_cursor_line, rest);
         self.note_cursor_col = 0;
@@ -312,25 +305,14 @@ impl App {
     pub fn note_cursor_up(&mut self) {
         if self.note_cursor_line > 0 {
             self.note_cursor_line -= 1;
-            self.note_cursor_col = self
-                .note_cursor_col
-                .min(self.note_lines[self.note_cursor_line].len());
-            if self.note_cursor_line < self.note_scroll {
-                self.note_scroll = self.note_cursor_line;
-            }
+            self.note_cursor_col = self.note_cursor_col.min(char_count(self.current_line()));
         }
     }
 
     pub fn note_cursor_down(&mut self) {
         if self.note_cursor_line + 1 < self.note_lines.len() {
             self.note_cursor_line += 1;
-            self.note_cursor_col = self
-                .note_cursor_col
-                .min(self.note_lines[self.note_cursor_line].len());
-            let max_scroll = self.note_lines.len().saturating_sub(1);
-            if self.note_cursor_line >= self.note_scroll + max_scroll.min(20) {
-                self.note_scroll = self.note_cursor_line.saturating_sub(19);
-            }
+            self.note_cursor_col = self.note_cursor_col.min(char_count(self.current_line()));
         }
     }
 
@@ -339,14 +321,13 @@ impl App {
             self.note_cursor_col -= 1;
         } else if self.note_cursor_line > 0 {
             self.note_cursor_line -= 1;
-            self.note_cursor_col = self.note_lines[self.note_cursor_line].len();
+            self.note_cursor_col = char_count(self.current_line());
         }
     }
 
     pub fn note_cursor_right(&mut self) {
         if self.note_cursor_line < self.note_lines.len() {
-            let line_len = self.note_lines[self.note_cursor_line].len();
-            if self.note_cursor_col < line_len {
+            if self.note_cursor_col < char_count(self.current_line()) {
                 self.note_cursor_col += 1;
             } else if self.note_cursor_line + 1 < self.note_lines.len() {
                 self.note_cursor_line += 1;
@@ -361,25 +342,18 @@ impl App {
 
     pub fn note_cursor_end(&mut self) {
         if self.note_cursor_line < self.note_lines.len() {
-            self.note_cursor_col = self.note_lines[self.note_cursor_line].len();
+            self.note_cursor_col = char_count(self.current_line());
         }
     }
 
     pub fn visible_indices(&self) -> Vec<usize> {
-        let indices: Vec<usize> = self
-            .todos
+        self.todos
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, t)| t.archived == self.show_archived)
-            .filter(|(_, t)| {
-                self.search_filter.as_ref().is_none_or(|query| {
-                    t.description.to_lowercase().contains(&query.to_lowercase())
-                })
-            })
+            .filter(|(_, t)| self.matches_view(t))
             .map(|(i, _)| i)
-            .collect();
-        indices
+            .collect()
     }
 
     pub fn visible_count(&self) -> usize {
@@ -503,12 +477,7 @@ impl App {
     pub fn toggle_done(&mut self) {
         if let Some(idx) = self.selected_todo_index() {
             let todo = &mut self.todos[idx];
-            todo.done = !todo.done;
-            todo.completed_at = if todo.done {
-                Some(Local::now().naive_local())
-            } else {
-                None
-            };
+            todo.set_done(!todo.done);
             storage::save(&self.storage_path, &self.todos);
         }
     }
@@ -517,13 +486,7 @@ impl App {
         if let Some(idx) = self.selected_todo_index() {
             let todo = &mut self.todos[idx];
             todo.archived = !todo.archived;
-            if todo.archived {
-                todo.done = true;
-                todo.completed_at = Some(Local::now().naive_local());
-            } else {
-                todo.done = false;
-                todo.completed_at = None;
-            }
+            todo.set_done(todo.archived);
             storage::save(&self.storage_path, &self.todos);
             self.clamp_selection();
         }
@@ -581,24 +544,26 @@ impl App {
         self.confirm_selection = if self.confirm_selection == 1 { 0 } else { 1 };
     }
 
+    /// Deletes the note open in the Note view. `empty_fallback` is the view
+    /// shown when the last note is removed.
+    fn delete_current_note(&mut self, empty_fallback: View) {
+        if let Some(idx) = self.current_note_index {
+            self.notes.remove(idx);
+            if self.notes.is_empty() {
+                self.current_note_index = None;
+                self.view = empty_fallback;
+            } else {
+                self.current_note_index = Some(idx.min(self.notes.len() - 1));
+            }
+            storage::save_notes(&self.notes_path, &self.notes);
+        }
+    }
+
     pub fn confirm_delete(&mut self) {
         if self.confirm_selection == 1 {
             match self.panel {
                 Panel::Main => match self.view {
-                    View::Note => {
-                        if let Some(idx) = self.current_note_index {
-                            self.notes.remove(idx);
-                            self.current_note_index = None;
-                            if self.notes.is_empty() {
-                                self.view = View::Notes;
-                            } else if idx >= self.notes.len() {
-                                self.current_note_index = Some(self.notes.len().saturating_sub(1));
-                            } else {
-                                self.current_note_index = Some(idx);
-                            }
-                            storage::save_notes(&self.notes_path, &self.notes);
-                        }
-                    }
+                    View::Note => self.delete_current_note(View::Notes),
                     View::Notes => {
                         let idx = self.selected_index;
                         if idx < self.notes.len() {
@@ -607,7 +572,7 @@ impl App {
                                 self.view = View::Todos;
                                 self.selected_index = 0;
                             } else if self.selected_index >= self.notes.len() {
-                                self.selected_index = self.notes.len().saturating_sub(1);
+                                self.selected_index = self.notes.len() - 1;
                             }
                             self.current_note_index = None;
                             storage::save_notes(&self.notes_path, &self.notes);
@@ -622,23 +587,11 @@ impl App {
                         }
                     }
                 },
-                Panel::Sidebar => match self.side_index {
-                    2 => {
-                        if let Some(idx) = self.current_note_index {
-                            self.notes.remove(idx);
-                            self.current_note_index = None;
-                            if self.notes.is_empty() {
-                                self.view = View::Todos;
-                            } else if idx >= self.notes.len() {
-                                self.current_note_index = Some(self.notes.len().saturating_sub(1));
-                            } else {
-                                self.current_note_index = Some(idx);
-                            }
-                            storage::save_notes(&self.notes_path, &self.notes);
-                        }
+                Panel::Sidebar => {
+                    if self.side_index == 2 {
+                        self.delete_current_note(View::Todos);
                     }
-                    _ => {}
-                },
+                }
             }
         }
         self.input_mode = InputMode::Normal;
@@ -658,8 +611,7 @@ impl App {
         for todo in &mut self.todos {
             if !todo.archived && todo.created_at < threshold {
                 todo.archived = true;
-                todo.done = true;
-                todo.completed_at = Some(Local::now().naive_local());
+                todo.set_done(true);
                 changed = true;
             }
         }
@@ -669,18 +621,13 @@ impl App {
     }
 
     pub fn reload(&mut self) {
-        let todos = storage::load(&self.storage_path);
-        let mut sorted = todos;
-        sorted.sort_by_key(|t| t.id);
-        self.todos = sorted;
+        self.todos = storage::load(&self.storage_path);
+        self.todos.sort_by_key(|t| t.id);
         self.clamp_selection();
 
-        let notes = storage::load_notes(&self.notes_path);
-        self.notes = notes;
+        self.notes = storage::load_notes(&self.notes_path);
 
-        if self.side_index > 2 {
-            self.side_index = 2;
-        }
+        self.side_index = self.side_index.min(self.side_count() - 1);
 
         if let Some(idx) = self.current_note_index {
             if idx >= self.notes.len() {
@@ -775,15 +722,21 @@ impl App {
         self.input_mode = InputMode::Search;
     }
 
-    pub fn apply_search(&mut self) {
-        let query = self.search_buffer.trim().to_string();
-        if query.is_empty() {
-            self.search_filter = None;
+    /// Derives the active filter from the search buffer and re-clamps the
+    /// selection against the newly filtered list.
+    fn sync_search_filter(&mut self) {
+        let query = self.search_buffer.trim();
+        self.search_filter = if query.is_empty() {
+            None
         } else {
-            self.search_filter = Some(query);
-        }
-        self.input_mode = InputMode::Normal;
+            Some(query.to_string())
+        };
         self.clamp_selection();
+    }
+
+    pub fn apply_search(&mut self) {
+        self.sync_search_filter();
+        self.input_mode = InputMode::Normal;
     }
 
     pub fn cancel_search(&mut self) {
@@ -795,38 +748,25 @@ impl App {
 
     pub fn search_buffer_push(&mut self, c: char) {
         self.search_buffer.push(c);
-        let query = self.search_buffer.trim();
-        if query.is_empty() {
-            self.search_filter = None;
-        } else {
-            self.search_filter = Some(query.to_string());
-        }
-        self.clamp_selection();
+        self.sync_search_filter();
     }
 
     pub fn search_buffer_pop(&mut self) {
         self.search_buffer.pop();
-        let query = self.search_buffer.trim();
-        if query.is_empty() {
-            self.search_filter = None;
-        } else {
-            self.search_filter = Some(query.to_string());
-        }
-        self.clamp_selection();
+        self.sync_search_filter();
     }
 }
 
-fn extract_title(content: &str) -> String {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("# ") {
-            return rest.trim().to_string();
-        }
-        if !trimmed.is_empty() {
-            return trimmed.chars().take(60).collect();
-        }
-    }
-    "Untitled".to_string()
+/// Byte offset of the `col`-th character of `line` (or the line's end).
+pub fn byte_index(line: &str, col: usize) -> usize {
+    line.char_indices()
+        .nth(col)
+        .map(|(i, _)| i)
+        .unwrap_or(line.len())
+}
+
+fn char_count(line: &str) -> usize {
+    line.chars().count()
 }
 
 #[cfg(test)]
@@ -949,5 +889,427 @@ mod tests {
 
         assert!(app.todos.is_empty());
         assert!(app.notes.is_empty());
+    }
+
+    // --- visibility & filtering ---
+
+    #[test]
+    fn visible_indices_newest_first_and_respects_archived() {
+        let mut archived = make_todo(3, "archived", true);
+        archived.archived = true;
+        let (_dir, mut app) = setup(
+            vec![
+                make_todo(1, "first", false),
+                make_todo(2, "second", false),
+                archived,
+            ],
+            vec![],
+        );
+
+        assert_eq!(app.visible_indices(), vec![1, 0]);
+
+        app.show_archived = true;
+        assert_eq!(app.visible_indices(), vec![2]);
+    }
+
+    #[test]
+    fn search_filter_is_case_insensitive() {
+        let (_dir, mut app) = setup(
+            vec![
+                make_todo(1, "Buy milk", false),
+                make_todo(2, "Write code", false),
+            ],
+            vec![],
+        );
+
+        app.search_buffer = "MILK".to_string();
+        app.apply_search();
+
+        assert_eq!(app.visible_count(), 1);
+        assert_eq!(app.todos[app.visible_indices()[0]].description, "Buy milk");
+    }
+
+    #[test]
+    fn search_narrows_as_typed_and_clamps_selection() {
+        let (_dir, mut app) = setup(
+            vec![make_todo(1, "aaa", false), make_todo(2, "bbb", false)],
+            vec![],
+        );
+        app.selected_index = 1;
+
+        app.start_search();
+        app.search_buffer_push('b');
+        assert_eq!(app.visible_count(), 1);
+        assert_eq!(app.selected_index, 0);
+
+        app.search_buffer_pop();
+        assert_eq!(app.visible_count(), 2);
+        assert!(app.search_filter.is_none());
+    }
+
+    #[test]
+    fn cancel_search_clears_filter() {
+        let (_dir, mut app) = setup(vec![make_todo(1, "aaa", false)], vec![]);
+        app.start_search();
+        app.search_buffer_push('z');
+        assert_eq!(app.visible_count(), 0);
+
+        app.cancel_search();
+        assert!(app.search_filter.is_none());
+        assert!(app.search_buffer.is_empty());
+        assert_eq!(app.visible_count(), 1);
+    }
+
+    #[test]
+    fn visible_entries_start_with_group_header() {
+        let (_dir, app) = setup(
+            vec![make_todo(1, "a", false), make_todo(2, "b", false)],
+            vec![],
+        );
+        let entries = app.visible_entries();
+        // Both todos created "now": one header followed by both todos.
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(entries[0], VisibleEntry::GroupHeader(_)));
+        assert!(matches!(entries[1], VisibleEntry::Todo(1)));
+        assert!(matches!(entries[2], VisibleEntry::Todo(0)));
+    }
+
+    #[test]
+    fn date_label_variants() {
+        let today = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap(); // Sunday, W24
+        assert_eq!(date_label(today, today), "Today (W24)");
+        assert_eq!(
+            date_label(NaiveDate::from_ymd_opt(2025, 6, 14).unwrap(), today),
+            "Yesterday"
+        );
+        assert_eq!(
+            date_label(NaiveDate::from_ymd_opt(2025, 6, 10).unwrap(), today),
+            "Tuesday (W24)"
+        );
+        assert_eq!(
+            date_label(NaiveDate::from_ymd_opt(2025, 6, 1).unwrap(), today),
+            "June 01"
+        );
+        assert_eq!(
+            date_label(NaiveDate::from_ymd_opt(2024, 12, 25).unwrap(), today),
+            "December 25, 2024"
+        );
+    }
+
+    // --- todo mutations ---
+
+    #[test]
+    fn push_todo_persists_and_selects_top() {
+        let (_dir, mut app) = setup(vec![], vec![]);
+        app.push_todo("new task".to_string());
+
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.selected_index, 0);
+        assert_eq!(storage::load(&app.storage_path).len(), 1);
+    }
+
+    #[test]
+    fn toggle_done_sets_and_clears_completed_at() {
+        let (_dir, mut app) = setup(vec![make_todo(1, "task", false)], vec![]);
+
+        app.toggle_done();
+        assert!(app.todos[0].done);
+        assert!(app.todos[0].completed_at.is_some());
+
+        app.toggle_done();
+        assert!(!app.todos[0].done);
+        assert!(app.todos[0].completed_at.is_none());
+    }
+
+    #[test]
+    fn archive_selected_marks_done_and_hides() {
+        let (_dir, mut app) = setup(vec![make_todo(1, "task", false)], vec![]);
+
+        app.archive_selected();
+        assert!(app.todos[0].archived);
+        assert!(app.todos[0].done);
+        assert_eq!(app.visible_count(), 0);
+
+        let saved = storage::load(&app.storage_path);
+        assert!(saved[0].archived);
+    }
+
+    #[test]
+    fn creating_flow_trims_and_rejects_empty() {
+        let (_dir, mut app) = setup(vec![], vec![]);
+
+        app.start_creating();
+        assert!(matches!(app.input_mode, InputMode::Creating));
+        for c in "  hi  ".chars() {
+            app.create_type_char(c);
+        }
+        app.confirm_creating();
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.todos[0].description, "hi");
+
+        app.start_creating();
+        app.create_type_char(' ');
+        app.confirm_creating();
+        assert_eq!(app.todos.len(), 1, "whitespace-only input is discarded");
+    }
+
+    #[test]
+    fn editing_flow_updates_description() {
+        let (_dir, mut app) = setup(vec![make_todo(1, "old", false)], vec![]);
+
+        app.start_editing();
+        assert_eq!(app.edit_buffer, "old");
+        app.edit_backspace();
+        app.edit_backspace();
+        app.edit_backspace();
+        for c in "new".chars() {
+            app.edit_type_char(c);
+        }
+        app.confirm_editing();
+
+        assert_eq!(app.todos[0].description, "new");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn cancel_editing_keeps_original() {
+        let (_dir, mut app) = setup(vec![make_todo(1, "old", false)], vec![]);
+        app.start_editing();
+        app.edit_type_char('x');
+        app.cancel_editing();
+        assert_eq!(app.todos[0].description, "old");
+    }
+
+    #[test]
+    fn confirm_delete_todo_enables_undo() {
+        let (_dir, mut app) = setup(vec![make_todo(1, "task", false)], vec![]);
+
+        app.start_deletion();
+        assert_eq!(app.confirm_selection, 0, "defaults to No");
+        app.confirm_delete();
+        assert_eq!(app.todos.len(), 1, "confirming No keeps the todo");
+
+        app.start_deletion();
+        app.confirm_move_right();
+        app.confirm_delete();
+        assert!(app.todos.is_empty());
+        assert!(app.undo_state.is_active());
+
+        app.undo_delete();
+        assert_eq!(app.todos.len(), 1);
+        assert!(!app.undo_state.is_active());
+        assert_eq!(storage::load(&app.storage_path).len(), 1);
+    }
+
+    #[test]
+    fn archive_old_archives_week_old_todos() {
+        let mut old = make_todo(1, "stale", false);
+        old.created_at = Local::now().naive_local() - Duration::days(8);
+        let (_dir, mut app) = setup(vec![old, make_todo(2, "fresh", false)], vec![]);
+
+        app.archive_old();
+
+        assert!(app.todos[0].archived);
+        assert!(app.todos[0].done);
+        assert!(!app.todos[1].archived);
+    }
+
+    // --- note deletion ---
+
+    #[test]
+    fn delete_open_note_selects_neighbor() {
+        let (_dir, mut app) = setup(
+            vec![],
+            vec![
+                make_note(1, "one"),
+                make_note(2, "two"),
+                make_note(3, "three"),
+            ],
+        );
+        app.view = View::Note;
+        app.current_note_index = Some(1);
+
+        app.start_deletion();
+        app.confirm_move_right();
+        app.confirm_delete();
+
+        assert_eq!(app.notes.len(), 2);
+        assert_eq!(app.current_note_index, Some(1));
+        assert_eq!(app.current_note().unwrap().title, "three");
+    }
+
+    #[test]
+    fn delete_last_open_note_falls_back_to_notes_view() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "only")]);
+        app.view = View::Note;
+        app.current_note_index = Some(0);
+
+        app.start_deletion();
+        app.confirm_move_right();
+        app.confirm_delete();
+
+        assert!(app.notes.is_empty());
+        assert_eq!(app.current_note_index, None);
+        assert_eq!(app.view, View::Notes);
+        assert!(storage::load_notes(&app.notes_path).is_empty());
+    }
+
+    #[test]
+    fn delete_note_from_list_clamps_selection() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "one"), make_note(2, "two")]);
+        app.view = View::Notes;
+        app.selected_index = 1;
+
+        app.start_deletion();
+        app.confirm_move_right();
+        app.confirm_delete();
+
+        assert_eq!(app.notes.len(), 1);
+        assert_eq!(app.selected_index, 0);
+    }
+
+    // --- note editor ---
+
+    fn note_app(content: &str) -> (TempDir, App) {
+        let mut note = make_note(1, "note");
+        note.content = content.to_string();
+        let (dir, mut app) = setup(vec![], vec![note]);
+        app.view = View::Note;
+        app.current_note_index = Some(0);
+        app.start_edit_note();
+        (dir, app)
+    }
+
+    #[test]
+    fn note_insert_and_save_updates_title() {
+        let (_dir, mut app) = note_app("");
+        for c in "# Hello".chars() {
+            app.note_cursor_insert(c);
+        }
+        app.note_cursor_enter();
+        for c in "body".chars() {
+            app.note_cursor_insert(c);
+        }
+        app.save_current_note();
+
+        let note = app.current_note().unwrap();
+        assert_eq!(note.content, "# Hello\nbody");
+        assert_eq!(note.title, "Hello");
+        assert_eq!(storage::load_notes(&app.notes_path)[0].title, "Hello");
+    }
+
+    #[test]
+    fn note_cursor_handles_multibyte_chars() {
+        let (_dir, mut app) = note_app("héllo");
+        app.note_cursor_end();
+        assert_eq!(app.note_cursor_col, 5, "columns count chars, not bytes");
+
+        app.note_cursor_home();
+        app.note_cursor_right();
+        app.note_cursor_right();
+        app.note_cursor_insert('x'); // typing after the multibyte char must not panic
+        assert_eq!(app.note_lines[0], "héxllo");
+
+        app.note_cursor_backspace();
+        app.note_cursor_backspace();
+        assert_eq!(app.note_lines[0], "hllo");
+    }
+
+    #[test]
+    fn note_backspace_at_line_start_joins_lines() {
+        let (_dir, mut app) = note_app("abc\ndef");
+        app.note_cursor_down();
+        app.note_cursor_home();
+        app.note_cursor_backspace();
+
+        assert_eq!(app.note_lines, vec!["abcdef"]);
+        assert_eq!(app.note_cursor_line, 0);
+        assert_eq!(app.note_cursor_col, 3);
+    }
+
+    #[test]
+    fn note_delete_at_line_end_joins_lines() {
+        let (_dir, mut app) = note_app("abc\ndef");
+        app.note_cursor_end();
+        app.note_cursor_delete();
+        assert_eq!(app.note_lines, vec!["abcdef"]);
+    }
+
+    #[test]
+    fn note_enter_splits_line_at_cursor() {
+        let (_dir, mut app) = note_app("abcdef");
+        app.note_cursor_right();
+        app.note_cursor_right();
+        app.note_cursor_right();
+        app.note_cursor_enter();
+
+        assert_eq!(app.note_lines, vec!["abc", "def"]);
+        assert_eq!(app.note_cursor_line, 1);
+        assert_eq!(app.note_cursor_col, 0);
+    }
+
+    #[test]
+    fn note_cursor_moves_across_line_boundaries() {
+        let (_dir, mut app) = note_app("ab\ncd");
+        app.note_cursor_end();
+        app.note_cursor_right();
+        assert_eq!((app.note_cursor_line, app.note_cursor_col), (1, 0));
+
+        app.note_cursor_left();
+        assert_eq!((app.note_cursor_line, app.note_cursor_col), (0, 2));
+    }
+
+    #[test]
+    fn note_cursor_vertical_clamps_column() {
+        let (_dir, mut app) = note_app("long line\nab");
+        app.note_cursor_end();
+        app.note_cursor_down();
+        assert_eq!((app.note_cursor_line, app.note_cursor_col), (1, 2));
+
+        app.note_cursor_up();
+        assert_eq!((app.note_cursor_line, app.note_cursor_col), (0, 2));
+    }
+
+    #[test]
+    fn start_creating_note_opens_editor() {
+        let (_dir, mut app) = setup(vec![], vec![]);
+        app.start_creating_note();
+
+        assert_eq!(app.notes.len(), 1);
+        assert_eq!(app.current_note_index, Some(0));
+        assert_eq!(app.view, View::Note);
+        assert!(matches!(app.note_mode, NoteMode::Editing));
+        assert_eq!(app.note_lines, vec![String::new()]);
+    }
+
+    // --- sidebar & misc ---
+
+    #[test]
+    fn sidebar_navigation_and_selection() {
+        let (_dir, mut app) = setup(vec![make_todo(1, "t", false)], vec![]);
+        app.panel = Panel::Sidebar;
+
+        app.side_down();
+        app.select_sidebar();
+        assert!(app.show_archived);
+        assert_eq!(app.panel, Panel::Main);
+
+        app.panel = Panel::Sidebar;
+        app.side_down();
+        app.select_sidebar();
+        assert_eq!(app.view, View::Notes);
+
+        app.panel = Panel::Sidebar;
+        app.side_down();
+        assert_eq!(app.side_index, 2, "cannot move past the last item");
+    }
+
+    #[test]
+    fn byte_index_maps_char_columns() {
+        assert_eq!(byte_index("héllo", 0), 0);
+        assert_eq!(byte_index("héllo", 1), 1);
+        assert_eq!(byte_index("héllo", 2), 3);
+        assert_eq!(byte_index("héllo", 99), 6);
+        assert_eq!(byte_index("", 0), 0);
     }
 }

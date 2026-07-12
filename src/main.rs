@@ -117,19 +117,6 @@ fn open_editor(content: &str) -> io::Result<String> {
     Ok(new_content)
 }
 
-fn extract_title(content: &str) -> String {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("# ") {
-            return rest.trim().to_string();
-        }
-        if !trimmed.is_empty() {
-            return trimmed.chars().take(60).collect();
-        }
-    }
-    "Untitled".to_string()
-}
-
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
     if let Some(cmd) = cli.command {
@@ -155,24 +142,43 @@ fn run_todos_cmd(cmd: TodosCommand) {
             archived,
         } => list_todos(done, pending, ids, archived),
         TodosCommand::Create { description } => add_todo(&description),
-        TodosCommand::Edit { id, description } => edit_todo(id, &description),
-        TodosCommand::Do { id } => mark_done(id),
-        TodosCommand::Undo { id } => mark_undone(id),
+        TodosCommand::Edit { id, description } => {
+            update_todo(id, format!("Updated todo #{id}"), |t| {
+                t.description = description
+            })
+        }
+        TodosCommand::Do { id } => update_todo(id, format!("Marked todo #{id} as done"), |t| {
+            t.set_done(true)
+        }),
+        TodosCommand::Undo { id } => {
+            update_todo(id, format!("Marked todo #{id} as not done"), |t| {
+                t.set_done(false)
+            })
+        }
         TodosCommand::Delete { id } => delete_todo(id),
-        TodosCommand::Archive { id } => archive_todo(id),
-        TodosCommand::Unarchive { id } => unarchive_todo(id),
+        TodosCommand::Archive { id } => update_todo(id, format!("Archived todo #{id}"), |t| {
+            t.archived = true;
+            t.set_done(true);
+        }),
+        TodosCommand::Unarchive { id } => {
+            update_todo(id, format!("Unarchived todo #{id}"), |t| t.archived = false)
+        }
     }
 }
 
-fn list_todos(done: bool, pending: bool, ids: bool, archived: bool) {
-    let path = storage_path();
-    let mut todos = storage::load(&path);
-    todos.sort_by_key(|t| t.id);
+/// True when the todo passes the `list` command's flags.
+fn matches_list_filter(t: &Todo, done: bool, pending: bool, archived: bool) -> bool {
     let show_done = done || !pending;
     let show_pending = pending || !done;
+    t.archived == archived && ((show_done && t.done) || (show_pending && !t.done))
+}
+
+fn list_todos(done: bool, pending: bool, ids: bool, archived: bool) {
+    let mut todos = storage::load(&storage_path());
+    todos.sort_by_key(|t| t.id);
     let filtered: Vec<_> = todos
         .iter()
-        .filter(|t| t.archived == archived && ((show_done && t.done) || (show_pending && !t.done)))
+        .filter(|t| matches_list_filter(t, done, pending, archived))
         .collect();
     if filtered.is_empty() {
         println!("No todos found.");
@@ -180,22 +186,18 @@ fn list_todos(done: bool, pending: bool, ids: bool, archived: bool) {
     }
     for t in filtered {
         let status = if t.done { "[x]" } else { "[ ]" };
-        if ids {
-            println!(
-                "{}  {:>16}  {}  {}",
-                status,
-                t.id,
-                t.created_at.format("%m-%d %H:%M"),
-                t.description,
-            );
+        let id_col = if ids {
+            format!("  {:>16}", t.id)
         } else {
-            println!(
-                "{}  {}  {}",
-                status,
-                t.created_at.format("%m-%d %H:%M"),
-                t.description,
-            );
-        }
+            String::new()
+        };
+        println!(
+            "{}{}  {}  {}",
+            status,
+            id_col,
+            t.created_at.format("%m-%d %H:%M"),
+            t.description,
+        );
     }
 }
 
@@ -214,48 +216,16 @@ fn add_todo(description: &str) {
     println!("Added todo");
 }
 
-fn edit_todo(id: u64, description: &str) {
+/// Applies `update` to the todo with `id` and saves; exits with an error
+/// message when the id is unknown.
+fn update_todo(id: u64, success: String, update: impl FnOnce(&mut Todo)) {
     let path = storage_path();
     let mut todos = storage::load(&path);
     match todos.iter_mut().find(|t| t.id == id) {
         Some(todo) => {
-            todo.description = description.to_string();
+            update(todo);
             storage::save(&path, &todos);
-            println!("Updated todo #{}", id);
-        }
-        None => {
-            eprintln!("Todo #{} not found", id);
-            std::process::exit(1);
-        }
-    }
-}
-
-fn mark_done(id: u64) {
-    let path = storage_path();
-    let mut todos = storage::load(&path);
-    match todos.iter_mut().find(|t| t.id == id) {
-        Some(todo) => {
-            todo.done = true;
-            todo.completed_at = Some(Local::now().naive_local());
-            storage::save(&path, &todos);
-            println!("Marked todo #{} as done", id);
-        }
-        None => {
-            eprintln!("Todo #{} not found", id);
-            std::process::exit(1);
-        }
-    }
-}
-
-fn mark_undone(id: u64) {
-    let path = storage_path();
-    let mut todos = storage::load(&path);
-    match todos.iter_mut().find(|t| t.id == id) {
-        Some(todo) => {
-            todo.done = false;
-            todo.completed_at = None;
-            storage::save(&path, &todos);
-            println!("Marked todo #{} as not done", id);
+            println!("{success}");
         }
         None => {
             eprintln!("Todo #{} not found", id);
@@ -275,40 +245,6 @@ fn delete_todo(id: u64) {
     }
     storage::save(&path, &todos);
     println!("Deleted todo #{}", id);
-}
-
-fn archive_todo(id: u64) {
-    let path = storage_path();
-    let mut todos = storage::load(&path);
-    match todos.iter_mut().find(|t| t.id == id) {
-        Some(todo) => {
-            todo.archived = true;
-            todo.done = true;
-            todo.completed_at = Some(Local::now().naive_local());
-            storage::save(&path, &todos);
-            println!("Archived todo #{}", id);
-        }
-        None => {
-            eprintln!("Todo #{} not found", id);
-            std::process::exit(1);
-        }
-    }
-}
-
-fn unarchive_todo(id: u64) {
-    let path = storage_path();
-    let mut todos = storage::load(&path);
-    match todos.iter_mut().find(|t| t.id == id) {
-        Some(todo) => {
-            todo.archived = false;
-            storage::save(&path, &todos);
-            println!("Unarchived todo #{}", id);
-        }
-        None => {
-            eprintln!("Todo #{} not found", id);
-            std::process::exit(1);
-        }
-    }
 }
 
 fn run_notes_cmd(cmd: NotesCommand) {
@@ -362,7 +298,7 @@ fn run_notes_cmd(cmd: NotesCommand) {
                         }
                     };
                     note.content = new_content;
-                    note.title = extract_title(&note.content);
+                    note.title = storage::extract_title(&note.content);
                     note.updated_at = Local::now().naive_local();
                     storage::save_notes(&path, &notes);
                     println!("Updated note #{}", id);
@@ -722,4 +658,66 @@ fn handle_creating_event(app: &mut App, code: KeyCode) -> io::Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn todo(done: bool, archived: bool) -> Todo {
+        Todo {
+            id: 1,
+            description: "t".to_string(),
+            done,
+            archived,
+            created_at: Local::now().naive_local(),
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn list_filter_defaults_to_all_unarchived() {
+        assert!(matches_list_filter(
+            &todo(false, false),
+            false,
+            false,
+            false
+        ));
+        assert!(matches_list_filter(&todo(true, false), false, false, false));
+        assert!(!matches_list_filter(
+            &todo(false, true),
+            false,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn list_filter_done_and_pending_flags() {
+        assert!(matches_list_filter(&todo(true, false), true, false, false));
+        assert!(!matches_list_filter(
+            &todo(false, false),
+            true,
+            false,
+            false
+        ));
+
+        assert!(matches_list_filter(&todo(false, false), false, true, false));
+        assert!(!matches_list_filter(&todo(true, false), false, true, false));
+
+        // Both flags together show everything again.
+        assert!(matches_list_filter(&todo(true, false), true, true, false));
+        assert!(matches_list_filter(&todo(false, false), true, true, false));
+    }
+
+    #[test]
+    fn list_filter_archived_flag() {
+        assert!(matches_list_filter(&todo(true, true), false, false, true));
+        assert!(!matches_list_filter(
+            &todo(false, false),
+            false,
+            false,
+            true
+        ));
+    }
 }

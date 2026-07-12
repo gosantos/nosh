@@ -558,7 +558,7 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
+fn render_note_editor(frame: &mut Frame, area: Rect, app: &mut App) {
     let border_color = Color::Yellow;
 
     let title = app
@@ -575,8 +575,16 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
 
     let inner = block.inner(area);
     let visible_height = inner.height as usize;
+    // Keep the cursor line visible, above the status bar on the last row.
+    let follow_height = visible_height.saturating_sub(1).max(1);
+    if app.note_cursor_line < app.note_scroll {
+        app.note_scroll = app.note_cursor_line;
+    } else if app.note_cursor_line >= app.note_scroll + follow_height {
+        app.note_scroll = app.note_cursor_line + 1 - follow_height;
+    }
     let max_scroll = app.note_lines.len().saturating_sub(visible_height);
-    let scroll = app.note_scroll.min(max_scroll);
+    app.note_scroll = app.note_scroll.min(max_scroll);
+    let scroll = app.note_scroll;
 
     let visible: Vec<Line> = app
         .note_lines
@@ -590,17 +598,12 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &App) {
             let numbered = format!("{:>3} │ ", abs_line + 1);
 
             if is_cursor_line {
-                let before = &line[..app.note_cursor_col.min(line.len())];
-                let at = line
-                    .chars()
-                    .nth(app.note_cursor_col)
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| " ".to_string());
-                let after = if app.note_cursor_col < line.len() {
-                    &line[(app.note_cursor_col + 1).min(line.len())..]
-                } else {
-                    ""
-                };
+                let cursor_byte = crate::app::byte_index(line, app.note_cursor_col);
+                let before = &line[..cursor_byte];
+                let rest = &line[cursor_byte..];
+                let cursor_char = rest.chars().next();
+                let at = cursor_char.map_or_else(|| " ".to_string(), |c| c.to_string());
+                let after = &rest[cursor_char.map_or(0, char::len_utf8)..];
                 Line::from(vec![
                     Span::styled(numbered, Style::default().fg(Color::DarkGray)),
                     Span::raw(before),
@@ -903,4 +906,18 @@ fn preview_note(content: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_note_first_non_empty_line() {
+        assert_eq!(preview_note("\n\n  hello world  \nmore"), "hello world");
+        assert_eq!(preview_note(""), "");
+        assert_eq!(preview_note("\n  \n"), "");
+        let long = format!("{}\nnext", "x".repeat(100));
+        assert_eq!(preview_note(&long).chars().count(), 60);
+    }
 }
