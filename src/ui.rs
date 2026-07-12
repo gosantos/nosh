@@ -687,7 +687,13 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &mut App) {
         .map(|(i, line)| {
             let abs_line = i + scroll;
             let is_cursor_line = abs_line == app.note_cursor_line;
+            let gutter_color = if is_cursor_line {
+                Color::Rgb(120, 120, 120)
+            } else {
+                Color::Rgb(70, 70, 70)
+            };
             let numbered = format!("{:>3} │ ", abs_line + 1);
+            let base = md_line_style(line);
 
             if is_cursor_line {
                 let cursor_byte = crate::app::byte_index(line, app.note_cursor_col);
@@ -697,18 +703,18 @@ fn render_note_editor(frame: &mut Frame, area: Rect, app: &mut App) {
                 let at = cursor_char.map_or_else(|| " ".to_string(), |c| c.to_string());
                 let after = &rest[cursor_char.map_or(0, char::len_utf8)..];
                 Line::from(vec![
-                    Span::styled(numbered, Style::default().fg(Color::DarkGray)),
-                    Span::raw(before),
+                    Span::styled(numbered, Style::default().fg(gutter_color)),
+                    Span::styled(before.to_string(), base),
                     Span::styled(
                         at,
-                        Style::default().bg(Color::Rgb(80, 80, 80)).fg(Color::White),
+                        Style::default().bg(Color::Rgb(90, 90, 90)).fg(Color::White),
                     ),
-                    Span::raw(after),
+                    Span::styled(after.to_string(), base),
                 ])
             } else {
                 Line::from(vec![
-                    Span::styled(numbered, Style::default().fg(Color::DarkGray)),
-                    Span::raw(line.clone()),
+                    Span::styled(numbered, Style::default().fg(gutter_color)),
+                    Span::styled(line.clone(), base),
                 ])
             }
         })
@@ -1080,6 +1086,25 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let inner = footer.inner(area);
     frame.render_widget(footer, area);
     frame.render_widget(Paragraph::new(Line::from(text)), inner);
+}
+
+/// A base style for a raw markdown line in the editor, so headings, quotes
+/// and list items read differently while typing.
+fn md_line_style(line: &str) -> Style {
+    let t = line.trim_start();
+    if t.starts_with("# ") {
+        Style::default().fg(Color::Cyan).bold()
+    } else if t.starts_with("## ") || t.starts_with("### ") {
+        Style::default().fg(Color::LightCyan).bold()
+    } else if t.starts_with("> ") {
+        Style::default().fg(Color::Green).italic()
+    } else if t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ") {
+        Style::default().fg(Color::Yellow)
+    } else if t.starts_with("```") {
+        Style::default().fg(Color::Magenta)
+    } else {
+        Style::default().fg(Color::White)
+    }
 }
 
 /// Truncates `s` to at most `max` display columns, appending `…` when cut.
