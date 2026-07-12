@@ -279,6 +279,7 @@ fn run_notes_cmd(cmd: NotesCommand) {
                 id: storage::next_id(),
                 title,
                 content,
+                folder: None,
                 created_at: now,
                 updated_at: now,
             });
@@ -331,6 +332,27 @@ fn run_notes_cmd(cmd: NotesCommand) {
             println!("Deleted note #{}", id);
         }
     }
+}
+
+fn handle_move_folder_event(app: &mut App, code: KeyCode) -> io::Result<()> {
+    if app.new_folder_buffer.is_some() {
+        match code {
+            KeyCode::Esc => app.cancel_move(),
+            KeyCode::Enter => app.move_new_confirm(),
+            KeyCode::Backspace => app.move_new_backspace(),
+            KeyCode::Char(c) => app.move_new_char(c),
+            _ => {}
+        }
+    } else {
+        match code {
+            KeyCode::Esc => app.cancel_move(),
+            KeyCode::Enter => app.move_picker_select(),
+            KeyCode::Up | KeyCode::Char('k') => app.move_picker_up(),
+            KeyCode::Down | KeyCode::Char('j') => app.move_picker_down(),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn handle_confirm_delete_event(app: &mut App, code: KeyCode) -> io::Result<()> {
@@ -423,6 +445,10 @@ fn handle_event(app: &mut App) -> io::Result<()> {
             return handle_confirm_delete_event(app, key.code);
         }
 
+        if matches!(app.input_mode, InputMode::MoveToFolder) {
+            return handle_move_folder_event(app, key.code);
+        }
+
         if matches!(app.input_mode, InputMode::Search) {
             return handle_search_event(app, key.code);
         }
@@ -492,6 +518,7 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.start_creating_note();
                 }
                 KeyCode::Char('d') => app.start_deletion(),
+                KeyCode::Char('m') => app.start_move_current_note(),
                 KeyCode::Down | KeyCode::Char('j') => app.note_scroll_down(),
                 KeyCode::Up | KeyCode::Char('k') => app.note_scroll_up(),
                 KeyCode::PageDown => app.note_scroll_page_down(),
@@ -559,25 +586,18 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                     app.start_creating_note();
                 }
                 KeyCode::Char('d') => app.start_deletion(),
+                KeyCode::Char('m') => app.start_move_note(),
                 KeyCode::Enter => {
-                    if app.selected_index < app.notes.len() {
-                        app.current_note_index = Some(app.selected_index);
+                    if let Some(idx) = app.selected_note_index() {
+                        app.current_note_index = Some(idx);
                         app.view = View::Note;
                         app.note_mode = NoteMode::Viewing;
                         app.note_scroll = 0;
                         app.note_view_max_scroll = 0;
                     }
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if app.selected_index > 0 {
-                        app.selected_index -= 1;
-                    }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if app.selected_index + 1 < app.notes.len() {
-                        app.selected_index += 1;
-                    }
-                }
+                KeyCode::Up | KeyCode::Char('k') => app.note_list_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.note_list_down(),
                 KeyCode::Tab => app.panel = Panel::Sidebar,
                 KeyCode::Esc => {
                     app.search_filter = None;

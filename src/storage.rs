@@ -45,6 +45,10 @@ pub struct Note {
     pub id: u64,
     pub title: String,
     pub content: String,
+    /// One level of grouping. `None` means the note is unfiled. Folders exist
+    /// only while at least one note references them.
+    #[serde(default)]
+    pub folder: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -150,6 +154,13 @@ mod tests {
     }
 
     #[test]
+    fn note_without_folder_field_defaults_to_none() {
+        let json = r#"[{"id":1,"title":"old","content":"x","created_at":"2025-01-01T10:00:00","updated_at":"2025-01-01T10:00:00"}]"#;
+        let notes: Vec<Note> = serde_json::from_str(json).unwrap();
+        assert!(notes[0].folder.is_none());
+    }
+
+    #[test]
     fn load_notes_sorts_by_id() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("notes.json");
@@ -158,6 +169,7 @@ mod tests {
             id,
             title: String::new(),
             content: String::new(),
+            folder: None,
             created_at: now,
             updated_at: now,
         };

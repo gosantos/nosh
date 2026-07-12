@@ -6,7 +6,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, NoteMode, Panel, SideItem, View, VisibleEntry};
+use crate::app::{
+    App, FolderChoice, InputMode, NoteEntry, NoteMode, Panel, SideItem, View, VisibleEntry,
+};
 use crate::markdown;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -40,6 +42,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if matches!(app.input_mode, InputMode::ConfirmDelete) {
         render_confirm_delete(frame, area, app);
+    }
+
+    if matches!(app.input_mode, InputMode::MoveToFolder) {
+        render_move_picker(frame, area, app);
     }
 
     if app.undo_state.is_active() && matches!(app.input_mode, InputMode::Normal) {
@@ -407,53 +413,92 @@ fn render_note_list(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let count = app.notes.len();
+    let entries = app.note_entries();
+    let grouped = entries
+        .iter()
+        .any(|e| matches!(e, NoteEntry::FolderHeader { .. }));
+    let total_entries = entries.len();
 
+    // Keep the selected note visible, measuring in entry rows (headers count).
     let sel = app.selected_index.min(count.saturating_sub(1));
+    let mut selected_visual_pos = 0;
+    {
+        let mut note_pos = 0;
+        for (pos, entry) in entries.iter().enumerate() {
+            if let NoteEntry::Note(_) = entry {
+                if note_pos == sel {
+                    selected_visual_pos = pos;
+                    break;
+                }
+                note_pos += 1;
+            }
+        }
+    }
 
-    let max_scroll = count.saturating_sub(list_height);
-    if sel < app.list_scroll {
-        app.list_scroll = sel;
-    } else if sel >= app.list_scroll + list_height {
-        app.list_scroll = sel.saturating_sub(list_height).saturating_add(1);
+    let max_scroll = total_entries.saturating_sub(list_height);
+    if selected_visual_pos < app.list_scroll {
+        app.list_scroll = selected_visual_pos;
+    } else if selected_visual_pos >= app.list_scroll + list_height {
+        app.list_scroll = selected_visual_pos
+            .saturating_sub(list_height)
+            .saturating_add(1);
     }
     app.list_scroll = app.list_scroll.min(max_scroll);
 
-    let items: Vec<ListItem> = app
-        .notes
+    let selected_real = if app.panel == Panel::Main {
+        app.selected_note_index()
+    } else {
+        None
+    };
+
+    let items: Vec<ListItem> = entries
         .iter()
-        .enumerate()
         .skip(app.list_scroll)
         .take(list_height)
-        .map(|(i, note)| {
-            let is_selected = app.panel == Panel::Main && i == sel;
-            let prefix = if is_selected { "▸" } else { " " };
-            let title = if note.title.is_empty() {
-                "Untitled"
-            } else {
-                &note.title
-            };
-            let preview = preview_note(&note.content);
-            let date = note.created_at.format("%m-%d %H:%M").to_string();
-
-            let line = Line::from(vec![
+        .map(|entry| match entry {
+            NoteEntry::FolderHeader { label, count } => ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("{} ", prefix),
-                    Style::default().fg(Color::Cyan).bold(),
+                    format!("▾ {}", label),
+                    Style::default().fg(Color::Rgb(140, 140, 140)).bold(),
                 ),
-                Span::styled(format!("📝 {}", title), Style::default().fg(Color::White)),
                 Span::styled(
-                    format!("  {}", preview),
-                    Style::default().fg(Color::DarkGray),
+                    format!("  ({})", count),
+                    Style::default().fg(Color::Rgb(90, 90, 90)),
                 ),
-                Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
-            ]);
+            ])),
+            NoteEntry::Note(i) => {
+                let note = &app.notes[*i];
+                let is_selected = Some(*i) == selected_real;
+                let prefix = if is_selected { "▸" } else { " " };
+                let indent = if grouped { "  " } else { "" };
+                let title = if note.title.is_empty() {
+                    "Untitled"
+                } else {
+                    &note.title
+                };
+                let preview = preview_note(&note.content);
+                let date = note.created_at.format("%m-%d %H:%M").to_string();
 
-            let item_style = if is_selected {
-                Style::default().bg(Color::Rgb(35, 40, 48))
-            } else {
-                Style::default()
-            };
-            ListItem::new(line).style(item_style)
+                let line = Line::from(vec![
+                    Span::styled(
+                        format!("{}{} ", indent, prefix),
+                        Style::default().fg(Color::Cyan).bold(),
+                    ),
+                    Span::styled(format!("📝 {}", title), Style::default().fg(Color::White)),
+                    Span::styled(
+                        format!("  {}", preview),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(format!("  {}", date), Style::default().fg(Color::DarkGray)),
+                ]);
+
+                let item_style = if is_selected {
+                    Style::default().bg(Color::Rgb(35, 40, 48))
+                } else {
+                    Style::default()
+                };
+                ListItem::new(line).style(item_style)
+            }
         })
         .collect();
 
@@ -496,9 +541,13 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         &note.title
     };
+    let title_text = match &note.folder {
+        Some(folder) => format!(" {} / {} ", folder, title),
+        None => format!(" {} ", title),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", title))
+        .title(title_text)
         .border_style(Style::default().fg(border_color));
     frame.render_widget(block.clone(), area);
 
@@ -561,15 +610,19 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &mut App) {
 fn render_note_editor(frame: &mut Frame, area: Rect, app: &mut App) {
     let border_color = Color::Yellow;
 
-    let title = app
+    let (title, folder) = app
         .current_note()
-        .map(|n| n.title.clone())
+        .map(|n| (n.title.clone(), n.folder.clone()))
         .unwrap_or_default();
     let display_title = if title.is_empty() { "Editing" } else { &title };
+    let title_text = match &folder {
+        Some(folder) => format!(" {} / {} ", folder, display_title),
+        None => format!(" {} ", display_title),
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", display_title))
+        .title(title_text)
         .border_style(Style::default().fg(border_color));
     frame.render_widget(block.clone(), area);
 
@@ -776,6 +829,100 @@ fn render_confirm_delete(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(hint, hint_area);
 }
 
+fn render_move_picker(frame: &mut Frame, area: Rect, app: &App) {
+    let choice_label = |choice: &FolderChoice| match choice {
+        FolderChoice::Existing(name) => name.clone(),
+        FolderChoice::Unfiled => "— No folder —".to_string(),
+        FolderChoice::New => "+ New folder…".to_string(),
+    };
+
+    let content: Vec<Line> = if let Some(buf) = &app.new_folder_buffer {
+        vec![Line::from(vec![
+            Span::styled("Name: ", Style::default().fg(Color::Cyan)),
+            Span::raw(buf.clone()),
+            Span::styled("▎", Style::default().fg(Color::Yellow)),
+        ])]
+    } else {
+        app.folder_choices
+            .iter()
+            .enumerate()
+            .map(|(i, choice)| {
+                let selected = i == app.folder_choice_index;
+                let prefix = if selected { "▸ " } else { "  " };
+                let style = if selected {
+                    Style::default().fg(Color::White).bold()
+                } else {
+                    match choice {
+                        FolderChoice::New => Style::default().fg(Color::Green),
+                        FolderChoice::Unfiled => Style::default().fg(Color::DarkGray),
+                        FolderChoice::Existing(_) => Style::default().fg(Color::White),
+                    }
+                };
+                let line = Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Cyan).bold()),
+                    Span::styled(choice_label(choice), style),
+                ]);
+                if selected {
+                    line.style(Style::default().bg(Color::Rgb(35, 40, 48)))
+                } else {
+                    line
+                }
+            })
+            .collect()
+    };
+
+    let hint = if app.new_folder_buffer.is_some() {
+        "Enter create  ·  Esc back"
+    } else {
+        "↑/↓ choose  ·  Enter move  ·  Esc cancel"
+    };
+
+    let longest = app
+        .folder_choices
+        .iter()
+        .map(|c| choice_label(c).chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(app.new_folder_buffer.as_ref().map_or(0, |b| b.chars().count() + 6))
+        .max(hint.chars().count());
+    let width = ((longest as u16) + 6).clamp(24, area.width.saturating_sub(4));
+
+    let content_h = content.len() as u16;
+    // borders (2) + content + gap (1) + hint (1)
+    let height = (content_h + 4).min(area.height.saturating_sub(2)).max(5);
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let popup = Rect::new(x, y, width, height);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " Move to folder ",
+            Style::default().fg(Color::Cyan).bold(),
+        ))
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(block.clone(), popup);
+
+    let inner = block.inner(popup);
+    let [content_area, _gap, hint_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    frame.render_widget(Paragraph::new(content), content_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            hint,
+            Style::default().fg(Color::DarkGray),
+        )]))
+        .alignment(Alignment::Center),
+        hint_area,
+    );
+}
+
 fn render_undo_toast(frame: &mut Frame, area: Rect) {
     let toast_y = area.y + area.height.saturating_sub(6);
     let toast_rect = Rect::new(area.x + area.width / 5, toast_y, 3 * area.width / 5, 3);
@@ -813,6 +960,52 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw("delete  "),
                 Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
                 Span::raw("save+panel"),
+            ],
+            Style::default(),
+        ),
+        (InputMode::Normal, _) if app.view == View::Notes => (
+            vec![
+                Span::styled("  q ", Style::default().fg(Color::Red).bold()),
+                Span::raw("quit  "),
+                Span::styled("t ", Style::default().fg(Color::Cyan).bold()),
+                Span::raw("todos  "),
+                Span::styled("c ", Style::default().fg(Color::Green).bold()),
+                Span::raw("create  "),
+                Span::styled("Enter ", Style::default().fg(Color::Green).bold()),
+                Span::raw("open  "),
+                Span::styled("m ", Style::default().fg(Color::Yellow).bold()),
+                Span::raw("move  "),
+                Span::styled("d ", Style::default().fg(Color::Red).bold()),
+                Span::raw("delete  "),
+                Span::styled(
+                    "\u{2191}/\u{2193} ",
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::raw("nav  "),
+                Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
+                Span::raw("panel"),
+            ],
+            Style::default(),
+        ),
+        (InputMode::Normal, _) if app.view == View::Note => (
+            vec![
+                Span::styled("  q ", Style::default().fg(Color::Red).bold()),
+                Span::raw("quit  "),
+                Span::styled("i ", Style::default().fg(Color::Blue).bold()),
+                Span::raw("edit  "),
+                Span::styled("m ", Style::default().fg(Color::Yellow).bold()),
+                Span::raw("move  "),
+                Span::styled("d ", Style::default().fg(Color::Red).bold()),
+                Span::raw("delete  "),
+                Span::styled("n ", Style::default().fg(Color::Cyan).bold()),
+                Span::raw("notes  "),
+                Span::styled(
+                    "\u{2191}/\u{2193} ",
+                    Style::default().fg(Color::Cyan).bold(),
+                ),
+                Span::raw("scroll  "),
+                Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
+                Span::raw("panel"),
             ],
             Style::default(),
         ),
@@ -881,6 +1074,16 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("  Editing ", Style::default().fg(Color::Blue).bold()),
                 Span::styled(
                     "Enter:save  Esc:cancel",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+            Style::default(),
+        ),
+        (InputMode::MoveToFolder, _) => (
+            vec![
+                Span::styled("  Move ", Style::default().fg(Color::Yellow).bold()),
+                Span::styled(
+                    "pick a folder for this note",
                     Style::default().fg(Color::DarkGray),
                 ),
             ],

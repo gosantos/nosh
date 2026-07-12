@@ -43,6 +43,18 @@ pub enum InputMode {
     Creating,
     Editing,
     ConfirmDelete,
+    MoveToFolder,
+}
+
+/// A row in the move-to-folder picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FolderChoice {
+    /// Assign the note to an existing folder.
+    Existing(String),
+    /// Clear the note's folder.
+    Unfiled,
+    /// Prompt for a brand-new folder name.
+    New,
 }
 
 pub enum NoteMode {
@@ -104,6 +116,12 @@ pub struct App {
     pub edit_buffer: String,
     pub edit_todo_index: Option<usize>,
     pub confirm_selection: usize,
+    /// The note being moved while the folder picker is open.
+    pub move_note_index: Option<usize>,
+    pub folder_choices: Vec<FolderChoice>,
+    pub folder_choice_index: usize,
+    /// `Some` while typing a new folder name in the picker.
+    pub new_folder_buffer: Option<String>,
 }
 
 fn side_items(todos: &[Todo], notes: &[Note]) -> Vec<SideItem> {
@@ -134,6 +152,17 @@ impl SideItem {
 pub enum VisibleEntry {
     GroupHeader(String),
     Todo(usize),
+}
+
+/// Label shown for the group holding notes with no folder.
+pub const UNFILED_LABEL: &str = "No folder";
+
+/// A row in the notes list: either a folder header or a note (index into
+/// `App::notes`). Headers only appear once at least one folder exists.
+#[derive(Clone)]
+pub enum NoteEntry {
+    FolderHeader { label: String, count: usize },
+    Note(usize),
 }
 
 fn date_label(date: NaiveDate, today: NaiveDate) -> String {
@@ -212,6 +241,10 @@ impl App {
             edit_buffer: String::new(),
             edit_todo_index: None,
             confirm_selection: 0,
+            move_note_index: None,
+            folder_choices: Vec::new(),
+            folder_choice_index: 0,
+            new_folder_buffer: None,
         }
     }
 
@@ -225,6 +258,204 @@ impl App {
 
     pub fn current_note(&self) -> Option<&Note> {
         self.current_note_index.and_then(|i| self.notes.get(i))
+    }
+
+    /// Distinct folder names in use, sorted case-insensitively.
+    pub fn folder_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for note in &self.notes {
+            if let Some(folder) = &note.folder {
+                if !names.iter().any(|n| n == folder) {
+                    names.push(folder.clone());
+                }
+            }
+        }
+        names.sort_by_key(|s| s.to_lowercase());
+        names
+    }
+
+    /// The notes list as displayed: folder headers interleaved with notes.
+    /// When no folders exist, this is a flat list of notes with no headers,
+    /// matching the pre-folders layout.
+    pub fn note_entries(&self) -> Vec<NoteEntry> {
+        let names = self.folder_names();
+        if names.is_empty() {
+            return (0..self.notes.len()).map(NoteEntry::Note).collect();
+        }
+
+        let mut entries = Vec::new();
+        for name in &names {
+            let indices: Vec<usize> = self
+                .notes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.folder.as_deref() == Some(name.as_str()))
+                .map(|(i, _)| i)
+                .collect();
+            entries.push(NoteEntry::FolderHeader {
+                label: name.clone(),
+                count: indices.len(),
+            });
+            entries.extend(indices.into_iter().map(NoteEntry::Note));
+        }
+
+        let unfiled: Vec<usize> = self
+            .notes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.folder.is_none())
+            .map(|(i, _)| i)
+            .collect();
+        if !unfiled.is_empty() {
+            entries.push(NoteEntry::FolderHeader {
+                label: UNFILED_LABEL.to_string(),
+                count: unfiled.len(),
+            });
+            entries.extend(unfiled.into_iter().map(NoteEntry::Note));
+        }
+        entries
+    }
+
+    /// Note indices in display order (folder grouping applied), excluding
+    /// headers. `selected_index` indexes into this list in the Notes view.
+    pub fn visible_note_indices(&self) -> Vec<usize> {
+        self.note_entries()
+            .into_iter()
+            .filter_map(|e| match e {
+                NoteEntry::Note(i) => Some(i),
+                NoteEntry::FolderHeader { .. } => None,
+            })
+            .collect()
+    }
+
+    /// The `App::notes` index of the note under the cursor in the Notes view.
+    pub fn selected_note_index(&self) -> Option<usize> {
+        self.visible_note_indices()
+            .get(self.selected_index)
+            .copied()
+    }
+
+    pub fn note_list_up(&mut self) {
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
+        }
+    }
+
+    pub fn note_list_down(&mut self) {
+        if self.selected_index + 1 < self.visible_note_indices().len() {
+            self.selected_index += 1;
+        }
+    }
+
+    /// Opens the move-to-folder picker for the note under the cursor.
+    pub fn start_move_note(&mut self) {
+        if let Some(idx) = self.selected_note_index() {
+            self.begin_move(idx);
+        }
+    }
+
+    /// Opens the picker for the note currently open in the Note view.
+    pub fn start_move_current_note(&mut self) {
+        if let Some(idx) = self.current_note_index {
+            self.begin_move(idx);
+        }
+    }
+
+    fn begin_move(&mut self, note_idx: usize) {
+        let current = self.notes[note_idx].folder.clone();
+
+        let mut choices: Vec<FolderChoice> =
+            self.folder_names().into_iter().map(FolderChoice::Existing).collect();
+        if current.is_some() {
+            choices.push(FolderChoice::Unfiled);
+        }
+        choices.push(FolderChoice::New);
+
+        self.folder_choice_index = current
+            .as_ref()
+            .and_then(|f| {
+                choices
+                    .iter()
+                    .position(|c| matches!(c, FolderChoice::Existing(n) if n == f))
+            })
+            .unwrap_or(0);
+        self.folder_choices = choices;
+        self.move_note_index = Some(note_idx);
+        self.new_folder_buffer = None;
+        self.input_mode = InputMode::MoveToFolder;
+    }
+
+    pub fn move_picker_up(&mut self) {
+        if self.folder_choice_index > 0 {
+            self.folder_choice_index -= 1;
+        }
+    }
+
+    pub fn move_picker_down(&mut self) {
+        if self.folder_choice_index + 1 < self.folder_choices.len() {
+            self.folder_choice_index += 1;
+        }
+    }
+
+    pub fn move_picker_select(&mut self) {
+        match self.folder_choices.get(self.folder_choice_index).cloned() {
+            Some(FolderChoice::Existing(name)) => self.apply_move(Some(name)),
+            Some(FolderChoice::Unfiled) => self.apply_move(None),
+            Some(FolderChoice::New) => self.new_folder_buffer = Some(String::new()),
+            None => {}
+        }
+    }
+
+    pub fn move_new_char(&mut self, c: char) {
+        if let Some(buf) = self.new_folder_buffer.as_mut() {
+            buf.push(c);
+        }
+    }
+
+    pub fn move_new_backspace(&mut self) {
+        if let Some(buf) = self.new_folder_buffer.as_mut() {
+            buf.pop();
+        }
+    }
+
+    /// Commits a typed folder name. Empty input drops back to the choice list.
+    pub fn move_new_confirm(&mut self) {
+        if let Some(buf) = self.new_folder_buffer.take() {
+            let name = buf.trim().to_string();
+            if name.is_empty() {
+                return;
+            }
+            self.apply_move(Some(name));
+        }
+    }
+
+    /// Esc backs out of new-name entry first, then closes the picker.
+    pub fn cancel_move(&mut self) {
+        if self.new_folder_buffer.is_some() {
+            self.new_folder_buffer = None;
+        } else {
+            self.close_move();
+        }
+    }
+
+    fn apply_move(&mut self, folder: Option<String>) {
+        if let Some(idx) = self.move_note_index {
+            self.notes[idx].folder = folder;
+            self.notes[idx].updated_at = Local::now().naive_local();
+            storage::save_notes(&self.notes_path, &self.notes);
+            if let Some(pos) = self.visible_note_indices().iter().position(|&i| i == idx) {
+                self.selected_index = pos;
+            }
+        }
+        self.close_move();
+    }
+
+    fn close_move(&mut self) {
+        self.move_note_index = None;
+        self.folder_choices.clear();
+        self.folder_choice_index = 0;
+        self.new_folder_buffer = None;
+        self.input_mode = InputMode::Normal;
     }
 
     pub fn save_current_note(&mut self) {
@@ -453,6 +684,7 @@ impl App {
             id: storage::next_id(),
             title: String::new(),
             content: String::new(),
+            folder: None,
             created_at: now,
             updated_at: now,
         };
@@ -509,8 +741,8 @@ impl App {
                     .map(|n| n.title.clone())
                     .unwrap_or_else(|| "this note".to_string()),
                 View::Notes => self
-                    .notes
-                    .get(self.selected_index)
+                    .selected_note_index()
+                    .and_then(|i| self.notes.get(i))
                     .map(|n| n.title.clone())
                     .unwrap_or_else(|| "this note".to_string()),
                 View::Todos => self
@@ -565,17 +797,19 @@ impl App {
                 Panel::Main => match self.view {
                     View::Note => self.delete_current_note(View::Notes),
                     View::Notes => {
-                        let idx = self.selected_index;
-                        if idx < self.notes.len() {
+                        if let Some(idx) = self.selected_note_index() {
                             self.notes.remove(idx);
+                            self.current_note_index = None;
+                            storage::save_notes(&self.notes_path, &self.notes);
                             if self.notes.is_empty() {
                                 self.view = View::Todos;
                                 self.selected_index = 0;
-                            } else if self.selected_index >= self.notes.len() {
-                                self.selected_index = self.notes.len() - 1;
+                            } else {
+                                let count = self.visible_note_indices().len();
+                                if self.selected_index >= count {
+                                    self.selected_index = count.saturating_sub(1);
+                                }
                             }
-                            self.current_note_index = None;
-                            storage::save_notes(&self.notes_path, &self.notes);
                         }
                     }
                     View::Todos => {
@@ -795,6 +1029,7 @@ mod tests {
             id,
             title: title.to_string(),
             content: format!("# {title}"),
+            folder: None,
             created_at: Local::now().naive_local(),
             updated_at: Local::now().naive_local(),
         }
@@ -1268,6 +1503,172 @@ mod tests {
 
         app.note_cursor_up();
         assert_eq!((app.note_cursor_line, app.note_cursor_col), (0, 2));
+    }
+
+    // --- note folders ---
+
+    fn note_labels(app: &App) -> Vec<String> {
+        app.note_entries()
+            .into_iter()
+            .map(|e| match e {
+                NoteEntry::FolderHeader { label, count } => format!("#{label}({count})"),
+                NoteEntry::Note(i) => app.notes[i].title.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn note_entries_flat_when_no_folders() {
+        let (_dir, app) = setup(vec![], vec![make_note(1, "a"), make_note(2, "b")]);
+        // No folder headers at all — identical to the pre-folders layout.
+        assert_eq!(note_labels(&app), vec!["a", "b"]);
+        assert_eq!(app.visible_note_indices(), vec![0, 1]);
+    }
+
+    #[test]
+    fn note_entries_group_by_folder_alpha_unfiled_last() {
+        let mut work = make_note(1, "standup");
+        work.folder = Some("Work".to_string());
+        let loose = make_note(2, "scratch");
+        let mut personal = make_note(3, "groceries");
+        personal.folder = Some("Personal".to_string());
+
+        let (_dir, app) = setup(vec![], vec![work, loose, personal]);
+        // Folders alphabetical (Personal before Work), unfiled group last.
+        assert_eq!(
+            note_labels(&app),
+            vec![
+                "#Personal(1)",
+                "groceries",
+                "#Work(1)",
+                "standup",
+                "#No folder(1)",
+                "scratch",
+            ]
+        );
+        // visible order follows the grouped display, not storage order.
+        assert_eq!(app.visible_note_indices(), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn selected_note_index_maps_through_grouping() {
+        let mut work = make_note(1, "w");
+        work.folder = Some("Work".to_string());
+        let mut personal = make_note(2, "p");
+        personal.folder = Some("Personal".to_string());
+        let (_dir, mut app) = setup(vec![], vec![work, personal]);
+
+        app.view = View::Notes;
+        // Display order: Personal/p (idx 1), Work/w (idx 0).
+        app.selected_index = 0;
+        assert_eq!(app.selected_note_index(), Some(1));
+        app.selected_index = 1;
+        assert_eq!(app.selected_note_index(), Some(0));
+    }
+
+    #[test]
+    fn move_note_to_new_folder_and_cursor_follows() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a"), make_note(2, "b")]);
+        app.view = View::Notes;
+        app.selected_index = 1; // note "b"
+
+        app.start_move_note();
+        assert!(matches!(app.input_mode, InputMode::MoveToFolder));
+        // Only "+ New folder…" is offered when there are no folders yet and the
+        // note is already unfiled.
+        assert_eq!(app.folder_choices.len(), 1);
+        assert_eq!(app.folder_choices[0], FolderChoice::New);
+
+        app.move_picker_select(); // choose "New folder…"
+        assert!(app.new_folder_buffer.is_some());
+        for c in "Work".chars() {
+            app.move_new_char(c);
+        }
+        app.move_new_confirm();
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert_eq!(app.notes[1].folder.as_deref(), Some("Work"));
+        // Cursor stays on "b" in its new group.
+        assert_eq!(app.selected_note_index(), Some(1));
+        assert_eq!(storage::load_notes(&app.notes_path)[1].folder.as_deref(), Some("Work"));
+    }
+
+    #[test]
+    fn move_note_to_existing_folder_then_unfiled() {
+        let mut filed = make_note(1, "a");
+        filed.folder = Some("Work".to_string());
+        let (_dir, mut app) = setup(vec![], vec![filed, make_note(2, "b")]);
+        app.view = View::Notes;
+
+        // Select unfiled "b" (display order: Work/a, then No folder/b).
+        app.selected_index = 1;
+        assert_eq!(app.selected_note_index(), Some(1));
+
+        app.start_move_note();
+        // Offers: existing "Work", then "+ New folder…" (note is unfiled → no
+        // "No folder" choice).
+        assert_eq!(app.folder_choices.len(), 2);
+        assert_eq!(app.folder_choices[0], FolderChoice::Existing("Work".to_string()));
+        app.move_picker_select(); // Work
+        assert_eq!(app.notes[1].folder.as_deref(), Some("Work"));
+
+        // Now move it back to unfiled.
+        app.start_move_note();
+        assert!(app.folder_choices.contains(&FolderChoice::Unfiled));
+        let pos = app
+            .folder_choices
+            .iter()
+            .position(|c| *c == FolderChoice::Unfiled)
+            .unwrap();
+        app.folder_choice_index = pos;
+        app.move_picker_select();
+        assert!(app.notes[1].folder.is_none());
+    }
+
+    #[test]
+    fn cancel_move_backs_out_of_typing_then_closes() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
+        app.view = View::Notes;
+        app.start_move_note();
+        app.move_picker_select(); // enter new-name typing
+        assert!(app.new_folder_buffer.is_some());
+
+        app.cancel_move(); // first Esc: leave typing, stay in picker
+        assert!(app.new_folder_buffer.is_none());
+        assert!(matches!(app.input_mode, InputMode::MoveToFolder));
+
+        app.cancel_move(); // second Esc: close picker
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app.notes[0].folder.is_none());
+    }
+
+    #[test]
+    fn empty_new_folder_name_is_ignored() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
+        app.view = View::Notes;
+        app.start_move_note();
+        app.move_picker_select(); // typing
+        app.move_new_char(' ');
+        app.move_new_confirm(); // whitespace-only → no-op, back to list
+        assert!(app.notes[0].folder.is_none());
+        assert!(matches!(app.input_mode, InputMode::MoveToFolder));
+    }
+
+    #[test]
+    fn deleting_last_note_in_folder_removes_the_folder() {
+        let mut a = make_note(1, "a");
+        a.folder = Some("Work".to_string());
+        let (_dir, mut app) = setup(vec![], vec![a, make_note(2, "b")]);
+        app.view = View::Notes;
+        app.selected_index = 0; // Work/a
+
+        app.start_deletion();
+        app.confirm_move_right();
+        app.confirm_delete();
+
+        assert_eq!(app.notes.len(), 1);
+        assert!(app.folder_names().is_empty(), "empty folder disappears");
+        assert_eq!(note_labels(&app), vec!["b"]);
     }
 
     #[test]
