@@ -107,6 +107,10 @@ pub struct App {
     pub current_note_index: Option<usize>,
     pub storage_path: PathBuf,
     notes_path: PathBuf,
+    folders_path: PathBuf,
+    /// Durable folder names. May be empty even when notes reference folders
+    /// (legacy data); `folder_names` reconciles the two.
+    pub folders: Vec<String>,
     pub search_filter: Option<String>,
     pub search_buffer: String,
     pub undo_state: UndoState,
@@ -211,6 +215,8 @@ impl App {
         todos.sort_by_key(|t| t.id);
         let notes_path = storage_path.with_file_name("notes.json");
         let notes = storage::load_notes(&notes_path);
+        let folders_path = storage_path.with_file_name("folders.json");
+        let folders = storage::load_folders(&folders_path);
         App {
             todos,
             notes,
@@ -232,6 +238,8 @@ impl App {
             current_note_index: None,
             storage_path,
             notes_path,
+            folders_path,
+            folders,
             search_filter: None,
             search_buffer: String::new(),
             undo_state: UndoState::Inactive,
@@ -260,18 +268,27 @@ impl App {
         self.current_note_index.and_then(|i| self.notes.get(i))
     }
 
-    /// Distinct folder names in use, sorted case-insensitively.
+    /// All folders to display: the durable set plus any folder still
+    /// referenced by a note (covers legacy data), sorted case-insensitively.
     pub fn folder_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = Vec::new();
+        let mut names: Vec<String> = self.folders.clone();
         for note in &self.notes {
             if let Some(folder) = &note.folder {
-                if !names.iter().any(|n| n == folder) {
+                if !names.contains(folder) {
                     names.push(folder.clone());
                 }
             }
         }
         names.sort_by_key(|s| s.to_lowercase());
         names
+    }
+
+    /// Registers a durable folder if new, persisting the folder set.
+    fn register_folder(&mut self, name: &str) {
+        if !self.folders.iter().any(|f| f == name) {
+            self.folders.push(name.to_string());
+            storage::save_folders(&self.folders_path, &self.folders);
+        }
     }
 
     /// The notes list as displayed: folder headers interleaved with notes.
@@ -347,6 +364,18 @@ impl App {
         }
     }
 
+    /// Returns from an open note to the notes list, keeping that note under
+    /// the cursor.
+    pub fn back_to_notes_list(&mut self) {
+        if let Some(cur) = self.current_note_index {
+            if let Some(pos) = self.visible_note_indices().iter().position(|&i| i == cur) {
+                self.selected_index = pos;
+            }
+        }
+        self.view = View::Notes;
+        self.panel = Panel::Main;
+    }
+
     /// Opens the move-to-folder picker for the note under the cursor.
     pub fn start_move_note(&mut self) {
         if let Some(idx) = self.selected_note_index() {
@@ -362,27 +391,60 @@ impl App {
     }
 
     fn begin_move(&mut self, note_idx: usize) {
-        let current = self.notes[note_idx].folder.clone();
+        self.move_note_index = Some(note_idx);
+        self.new_folder_buffer = None;
+        self.folder_choice_index = 0;
+        self.rebuild_move_choices();
+        // Preselect the note's current folder, if any.
+        if let Some(f) = self.notes[note_idx].folder.clone() {
+            if let Some(pos) = self
+                .folder_choices
+                .iter()
+                .position(|c| matches!(c, FolderChoice::Existing(n) if *n == f))
+            {
+                self.folder_choice_index = pos;
+            }
+        }
+        self.input_mode = InputMode::MoveToFolder;
+    }
 
-        let mut choices: Vec<FolderChoice> =
-            self.folder_names().into_iter().map(FolderChoice::Existing).collect();
-        if current.is_some() {
+    /// Rebuilds the picker rows: existing folders, then "No folder" (only when
+    /// the note is currently filed), then "New folder…".
+    fn rebuild_move_choices(&mut self) {
+        let filed = self
+            .move_note_index
+            .and_then(|i| self.notes.get(i))
+            .is_some_and(|n| n.folder.is_some());
+        let mut choices: Vec<FolderChoice> = self
+            .folder_names()
+            .into_iter()
+            .map(FolderChoice::Existing)
+            .collect();
+        if filed {
             choices.push(FolderChoice::Unfiled);
         }
         choices.push(FolderChoice::New);
-
-        self.folder_choice_index = current
-            .as_ref()
-            .and_then(|f| {
-                choices
-                    .iter()
-                    .position(|c| matches!(c, FolderChoice::Existing(n) if n == f))
-            })
-            .unwrap_or(0);
+        self.folder_choice_index = self.folder_choice_index.min(choices.len() - 1);
         self.folder_choices = choices;
-        self.move_note_index = Some(note_idx);
-        self.new_folder_buffer = None;
-        self.input_mode = InputMode::MoveToFolder;
+    }
+
+    /// Removes the highlighted folder if it holds no notes. Non-empty folders
+    /// are left alone so notes are never orphaned.
+    pub fn delete_selected_folder(&mut self) {
+        let Some(FolderChoice::Existing(name)) =
+            self.folder_choices.get(self.folder_choice_index).cloned()
+        else {
+            return;
+        };
+        let empty = !self
+            .notes
+            .iter()
+            .any(|n| n.folder.as_deref() == Some(name.as_str()));
+        if empty {
+            self.folders.retain(|f| f != &name);
+            storage::save_folders(&self.folders_path, &self.folders);
+            self.rebuild_move_choices();
+        }
     }
 
     pub fn move_picker_up(&mut self) {
@@ -439,6 +501,9 @@ impl App {
     }
 
     fn apply_move(&mut self, folder: Option<String>) {
+        if let Some(name) = &folder {
+            self.register_folder(name);
+        }
         if let Some(idx) = self.move_note_index {
             self.notes[idx].folder = folder;
             self.notes[idx].updated_at = Local::now().naive_local();
@@ -860,6 +925,7 @@ impl App {
         self.clamp_selection();
 
         self.notes = storage::load_notes(&self.notes_path);
+        self.folders = storage::load_folders(&self.folders_path);
 
         self.side_index = self.side_index.min(self.side_count() - 1);
 
@@ -1652,6 +1718,160 @@ mod tests {
         app.move_new_confirm(); // whitespace-only → no-op, back to list
         assert!(app.notes[0].folder.is_none());
         assert!(matches!(app.input_mode, InputMode::MoveToFolder));
+    }
+
+    #[test]
+    fn move_creates_durable_folder_persisted_to_disk() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
+        app.view = View::Notes;
+        app.start_move_note();
+        app.move_picker_select(); // New folder…
+        for c in "Work".chars() {
+            app.move_new_char(c);
+        }
+        app.move_new_confirm();
+
+        assert!(app.folders.contains(&"Work".to_string()));
+        let persisted = storage::load_folders(&app.storage_path.with_file_name("folders.json"));
+        assert_eq!(persisted, vec!["Work"]);
+    }
+
+    // Reproduces the reported bug: moving the SAME note through several new
+    // folder names used to "rename" the first folder because empty folders
+    // vanished. With durable folders each one persists.
+    #[test]
+    fn moving_one_note_through_three_names_keeps_all_folders() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
+        app.view = View::Notes;
+
+        for name in ["Work", "Personal", "Ideas"] {
+            app.start_move_note();
+            // Jump to "New folder…" (always the last choice).
+            app.folder_choice_index = app.folder_choices.len() - 1;
+            app.move_picker_select();
+            for c in name.chars() {
+                app.move_new_char(c);
+            }
+            app.move_new_confirm();
+        }
+
+        let mut folders = app.folder_names();
+        folders.sort();
+        assert_eq!(folders, vec!["Ideas", "Personal", "Work"]);
+        // The note ends up in the last folder it was moved to.
+        assert_eq!(app.notes[0].folder.as_deref(), Some("Ideas"));
+    }
+
+    #[test]
+    fn durable_empty_folder_survives_moving_last_note_out() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
+        app.view = View::Notes;
+        // File the note, creating a durable folder.
+        app.start_move_note();
+        app.move_picker_select();
+        for c in "Work".chars() {
+            app.move_new_char(c);
+        }
+        app.move_new_confirm();
+        assert_eq!(app.notes[0].folder.as_deref(), Some("Work"));
+
+        // Move it back to unfiled; the empty folder remains.
+        app.start_move_note();
+        let pos = app
+            .folder_choices
+            .iter()
+            .position(|c| *c == FolderChoice::Unfiled)
+            .unwrap();
+        app.folder_choice_index = pos;
+        app.move_picker_select();
+
+        assert!(app.notes[0].folder.is_none());
+        assert!(app.folder_names().contains(&"Work".to_string()));
+    }
+
+    #[test]
+    fn durable_empty_folder_shows_as_entry_and_choice() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
+        app.folders = vec!["Work".to_string()]; // durable but empty
+        app.view = View::Notes;
+
+        // Empty folder header (count 0), then the unfiled note.
+        assert_eq!(
+            note_labels(&app),
+            vec!["#Work(0)", "#No folder(1)", "a"]
+        );
+
+        // And it is offered as a move target.
+        app.start_move_note();
+        assert!(app
+            .folder_choices
+            .contains(&FolderChoice::Existing("Work".to_string())));
+    }
+
+    #[test]
+    fn delete_empty_folder_from_picker() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
+        app.folders = vec!["Work".to_string()];
+        storage::save_folders(&app.storage_path.with_file_name("folders.json"), &app.folders);
+        app.view = View::Notes;
+
+        app.start_move_note();
+        let pos = app
+            .folder_choices
+            .iter()
+            .position(|c| *c == FolderChoice::Existing("Work".to_string()))
+            .unwrap();
+        app.folder_choice_index = pos;
+        app.delete_selected_folder();
+
+        assert!(!app.folder_names().contains(&"Work".to_string()));
+        // Choice list rebuilt without it.
+        assert!(!app
+            .folder_choices
+            .contains(&FolderChoice::Existing("Work".to_string())));
+        let persisted = storage::load_folders(&app.storage_path.with_file_name("folders.json"));
+        assert!(persisted.is_empty());
+    }
+
+    #[test]
+    fn delete_nonempty_folder_is_ignored() {
+        let mut filed = make_note(1, "a");
+        filed.folder = Some("Work".to_string());
+        let (_dir, mut app) = setup(vec![], vec![filed, make_note(2, "b")]);
+        app.folders = vec!["Work".to_string()];
+        app.view = View::Notes;
+        app.selected_index = app
+            .visible_note_indices()
+            .iter()
+            .position(|&i| i == 1) // unfiled "b", so its folder isn't Work
+            .unwrap();
+
+        app.start_move_note();
+        let pos = app
+            .folder_choices
+            .iter()
+            .position(|c| *c == FolderChoice::Existing("Work".to_string()))
+            .unwrap();
+        app.folder_choice_index = pos;
+        app.delete_selected_folder();
+
+        // Work still holds note "a", so it is not removed.
+        assert!(app.folder_names().contains(&"Work".to_string()));
+    }
+
+    #[test]
+    fn back_to_notes_list_highlights_the_open_note() {
+        let mut work = make_note(1, "w");
+        work.folder = Some("Work".to_string());
+        let personal = make_note(2, "p");
+        let (_dir, mut app) = setup(vec![], vec![work, personal]);
+        app.view = View::Note;
+        app.current_note_index = Some(0); // the "Work" note
+
+        app.back_to_notes_list();
+
+        assert_eq!(app.view, View::Notes);
+        assert_eq!(app.selected_note_index(), Some(0));
     }
 
     #[test]

@@ -63,6 +63,16 @@ pub fn save_notes(path: &Path, notes: &[Note]) {
     write_json(path, notes);
 }
 
+/// The persisted set of folder names. Folders exist independently of notes so
+/// that creating one is durable and it survives moving its last note out.
+pub fn load_folders(path: &Path) -> Vec<String> {
+    read_json(path)
+}
+
+pub fn save_folders(path: &Path, folders: &[String]) {
+    write_json(path, folders);
+}
+
 fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
     fs::read_to_string(path)
         .ok()

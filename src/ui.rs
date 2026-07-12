@@ -574,7 +574,7 @@ fn render_note_view(frame: &mut Frame, area: Rect, app: &mut App) {
         vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                "Press 'i' to start editing",
+                "Press 'e' to start editing",
                 Style::default().fg(Color::DarkGray),
             )]),
         ]
@@ -874,7 +874,7 @@ fn render_move_picker(frame: &mut Frame, area: Rect, app: &App) {
     let hint = if app.new_folder_buffer.is_some() {
         "Enter create  ·  Esc back"
     } else {
-        "↑/↓ choose  ·  Enter move  ·  Esc cancel"
+        "↑/↓ choose  ·  Enter move  ·  d delete empty  ·  Esc cancel"
     };
 
     let longest = app
@@ -989,23 +989,23 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         ),
         (InputMode::Normal, _) if app.view == View::Note => (
             vec![
-                Span::styled("  q ", Style::default().fg(Color::Red).bold()),
-                Span::raw("quit  "),
-                Span::styled("i ", Style::default().fg(Color::Blue).bold()),
+                Span::styled("  Esc ", Style::default().fg(Color::Cyan).bold()),
+                Span::raw("back  "),
+                Span::styled("e ", Style::default().fg(Color::Blue).bold()),
                 Span::raw("edit  "),
                 Span::styled("m ", Style::default().fg(Color::Yellow).bold()),
                 Span::raw("move  "),
                 Span::styled("d ", Style::default().fg(Color::Red).bold()),
                 Span::raw("delete  "),
-                Span::styled("n ", Style::default().fg(Color::Cyan).bold()),
-                Span::raw("notes  "),
                 Span::styled(
                     "\u{2191}/\u{2193} ",
                     Style::default().fg(Color::Cyan).bold(),
                 ),
                 Span::raw("scroll  "),
                 Span::styled("Tab ", Style::default().fg(Color::DarkGray).bold()),
-                Span::raw("panel"),
+                Span::raw("panel  "),
+                Span::styled("q ", Style::default().fg(Color::Red).bold()),
+                Span::raw("quit"),
             ],
             Style::default(),
         ),

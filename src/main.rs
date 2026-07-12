@@ -349,6 +349,7 @@ fn handle_move_folder_event(app: &mut App, code: KeyCode) -> io::Result<()> {
             KeyCode::Enter => app.move_picker_select(),
             KeyCode::Up | KeyCode::Char('k') => app.move_picker_up(),
             KeyCode::Down | KeyCode::Char('j') => app.move_picker_down(),
+            KeyCode::Char('d') => app.delete_selected_folder(),
             _ => {}
         }
     }
@@ -497,7 +498,8 @@ fn handle_event(app: &mut App) -> io::Result<()> {
 
             (InputMode::Normal, NoteMode::Viewing, Panel::Main, View::Note) => match key.code {
                 KeyCode::Char('q') => app.should_quit = true,
-                KeyCode::Char('i') => app.start_edit_note(),
+                KeyCode::Char('e') | KeyCode::Char('i') => app.start_edit_note(),
+                KeyCode::Esc | KeyCode::Char('n') => app.back_to_notes_list(),
                 KeyCode::Char('t') => {
                     app.view = View::Todos;
                     app.show_archived = false;
@@ -506,11 +508,6 @@ fn handle_event(app: &mut App) -> io::Result<()> {
                 KeyCode::Char('a') => {
                     app.view = View::Todos;
                     app.show_archived = true;
-                    app.selected_index = 0;
-                }
-                KeyCode::Char('n') => {
-                    app.view = View::Notes;
-                    app.panel = Panel::Main;
                     app.selected_index = 0;
                 }
                 KeyCode::Char('s') => app.start_search(),
