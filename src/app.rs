@@ -169,6 +169,15 @@ pub enum NoteEntry {
     Note(usize),
 }
 
+/// A cursor stop in the notes list. Notes are always selectable; an empty
+/// folder's header is too, since it has no notes to stand in for it — this
+/// is what lets the user land on an empty folder and delete it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NoteSelection {
+    Note(usize),
+    EmptyFolder(String),
+}
+
 fn date_label(date: NaiveDate, today: NaiveDate) -> String {
     if date == today {
         format!("Today (W{})", date.iso_week().week())
@@ -333,23 +342,37 @@ impl App {
         entries
     }
 
-    /// Note indices in display order (folder grouping applied), excluding
-    /// headers. `selected_index` indexes into this list in the Notes view.
-    pub fn visible_note_indices(&self) -> Vec<usize> {
+    /// The cursor stops in the notes list, in display order: every note plus
+    /// each empty folder's header. `selected_index` indexes into this list in
+    /// the Notes view.
+    pub fn note_selections(&self) -> Vec<NoteSelection> {
         self.note_entries()
             .into_iter()
             .filter_map(|e| match e {
-                NoteEntry::Note(i) => Some(i),
+                NoteEntry::Note(i) => Some(NoteSelection::Note(i)),
+                NoteEntry::FolderHeader { label, count: 0 } => {
+                    Some(NoteSelection::EmptyFolder(label))
+                }
                 NoteEntry::FolderHeader { .. } => None,
             })
             .collect()
     }
 
-    /// The `App::notes` index of the note under the cursor in the Notes view.
+    /// The `App::notes` index of the note under the cursor, or `None` when the
+    /// cursor is on an empty folder header instead.
     pub fn selected_note_index(&self) -> Option<usize> {
-        self.visible_note_indices()
-            .get(self.selected_index)
-            .copied()
+        match self.note_selections().get(self.selected_index) {
+            Some(NoteSelection::Note(i)) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The name of the empty folder under the cursor, if any.
+    pub fn selected_empty_folder(&self) -> Option<String> {
+        match self.note_selections().get(self.selected_index) {
+            Some(NoteSelection::EmptyFolder(name)) => Some(name.clone()),
+            _ => None,
+        }
     }
 
     pub fn note_list_up(&mut self) {
@@ -359,7 +382,7 @@ impl App {
     }
 
     pub fn note_list_down(&mut self) {
-        if self.selected_index + 1 < self.visible_note_indices().len() {
+        if self.selected_index + 1 < self.note_selections().len() {
             self.selected_index += 1;
         }
     }
@@ -368,7 +391,11 @@ impl App {
     /// the cursor.
     pub fn back_to_notes_list(&mut self) {
         if let Some(cur) = self.current_note_index {
-            if let Some(pos) = self.visible_note_indices().iter().position(|&i| i == cur) {
+            if let Some(pos) = self
+                .note_selections()
+                .iter()
+                .position(|s| matches!(s, NoteSelection::Note(i) if *i == cur))
+            {
                 self.selected_index = pos;
             }
         }
@@ -508,7 +535,11 @@ impl App {
             self.notes[idx].folder = folder;
             self.notes[idx].updated_at = Local::now().naive_local();
             storage::save_notes(&self.notes_path, &self.notes);
-            if let Some(pos) = self.visible_note_indices().iter().position(|&i| i == idx) {
+            if let Some(pos) = self
+                .note_selections()
+                .iter()
+                .position(|s| matches!(s, NoteSelection::Note(i) if *i == idx))
+            {
                 self.selected_index = pos;
             }
         }
@@ -667,7 +698,7 @@ impl App {
     fn clamp_selection(&mut self) {
         let count = match self.view {
             View::Todos => self.visible_count(),
-            View::Notes | View::Note => self.visible_note_indices().len(),
+            View::Notes | View::Note => self.note_selections().len(),
         };
         if count == 0 {
             self.selected_index = 0;
@@ -812,11 +843,16 @@ impl App {
                     .current_note()
                     .map(|n| n.title.clone())
                     .unwrap_or_else(|| "this note".to_string()),
-                View::Notes => self
-                    .selected_note_index()
-                    .and_then(|i| self.notes.get(i))
-                    .map(|n| n.title.clone())
-                    .unwrap_or_else(|| "this note".to_string()),
+                View::Notes => {
+                    if let Some(folder) = self.selected_empty_folder() {
+                        format!("{folder} (empty folder)")
+                    } else {
+                        self.selected_note_index()
+                            .and_then(|i| self.notes.get(i))
+                            .map(|n| n.title.clone())
+                            .unwrap_or_else(|| "this note".to_string())
+                    }
+                }
                 View::Todos => self
                     .selected_todo_index()
                     .and_then(|i| self.todos.get(i))
@@ -869,7 +905,14 @@ impl App {
                 Panel::Main => match self.view {
                     View::Note => self.delete_current_note(View::Notes),
                     View::Notes => {
-                        if let Some(idx) = self.selected_note_index() {
+                        if let Some(folder) = self.selected_empty_folder() {
+                            self.folders.retain(|f| f != &folder);
+                            storage::save_folders(&self.folders_path, &self.folders);
+                            let count = self.note_selections().len();
+                            if self.selected_index >= count {
+                                self.selected_index = count.saturating_sub(1);
+                            }
+                        } else if let Some(idx) = self.selected_note_index() {
                             self.notes.remove(idx);
                             self.current_note_index = None;
                             storage::save_notes(&self.notes_path, &self.notes);
@@ -877,7 +920,7 @@ impl App {
                                 self.view = View::Todos;
                                 self.selected_index = 0;
                             } else {
-                                let count = self.visible_note_indices().len();
+                                let count = self.note_selections().len();
                                 if self.selected_index >= count {
                                     self.selected_index = count.saturating_sub(1);
                                 }
@@ -1615,12 +1658,23 @@ mod tests {
             .collect()
     }
 
+    /// Note-store indices in display order, dropping folder headers.
+    fn note_order(app: &App) -> Vec<usize> {
+        app.note_selections()
+            .into_iter()
+            .filter_map(|s| match s {
+                NoteSelection::Note(i) => Some(i),
+                NoteSelection::EmptyFolder(_) => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn note_entries_flat_when_no_folders() {
         let (_dir, app) = setup(vec![], vec![make_note(1, "a"), make_note(2, "b")]);
         // No folder headers at all — identical to the pre-folders layout.
         assert_eq!(note_labels(&app), vec!["a", "b"]);
-        assert_eq!(app.visible_note_indices(), vec![0, 1]);
+        assert_eq!(note_order(&app), vec![0, 1]);
     }
 
     #[test]
@@ -1645,7 +1699,7 @@ mod tests {
             ]
         );
         // visible order follows the grouped display, not storage order.
-        assert_eq!(app.visible_note_indices(), vec![2, 0, 1]);
+        assert_eq!(note_order(&app), vec![2, 0, 1]);
     }
 
     #[test]
@@ -1836,7 +1890,13 @@ mod tests {
         // Empty folder header (count 0), then the unfiled note.
         assert_eq!(note_labels(&app), vec!["#Work(0)", "#No folder(1)", "a"]);
 
-        // And it is offered as a move target.
+        // And it is offered as a move target. (selected_index 0 is now the
+        // empty folder header, so aim the cursor at the note first.)
+        app.selected_index = app
+            .note_selections()
+            .iter()
+            .position(|s| matches!(s, NoteSelection::Note(_)))
+            .unwrap();
         app.start_move_note();
         assert!(app
             .folder_choices
@@ -1853,6 +1913,11 @@ mod tests {
         );
         app.view = View::Notes;
 
+        app.selected_index = app
+            .note_selections()
+            .iter()
+            .position(|s| matches!(s, NoteSelection::Note(_)))
+            .unwrap();
         app.start_move_note();
         let pos = app
             .folder_choices
@@ -1879,9 +1944,9 @@ mod tests {
         app.folders = vec!["Work".to_string()];
         app.view = View::Notes;
         app.selected_index = app
-            .visible_note_indices()
+            .note_selections()
             .iter()
-            .position(|&i| i == 1) // unfiled "b", so its folder isn't Work
+            .position(|s| matches!(s, NoteSelection::Note(1))) // unfiled "b"
             .unwrap();
 
         app.start_move_note();
@@ -1927,6 +1992,40 @@ mod tests {
         assert_eq!(app.notes.len(), 1);
         assert!(app.folder_names().is_empty(), "empty folder disappears");
         assert_eq!(note_labels(&app), vec!["b"]);
+    }
+
+    #[test]
+    fn empty_folder_header_is_a_cursor_stop() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
+        app.folders = vec!["Work".to_string()]; // durable but empty
+        app.view = View::Notes;
+
+        // Cursor starts on the empty folder header, then steps down to the note.
+        assert_eq!(app.selected_empty_folder().as_deref(), Some("Work"));
+        assert_eq!(app.selected_note_index(), None);
+        app.note_list_down();
+        assert_eq!(app.selected_empty_folder(), None);
+        assert_eq!(app.selected_note_index(), Some(0));
+    }
+
+    #[test]
+    fn delete_empty_folder_from_notes_list() {
+        let (_dir, mut app) = setup(vec![], vec![make_note(1, "a")]);
+        app.folders = vec!["Work".to_string()];
+        storage::save_folders(&app.folders_path, &app.folders);
+        app.view = View::Notes;
+
+        // Land on the empty folder header and confirm the delete.
+        assert_eq!(app.selected_empty_folder().as_deref(), Some("Work"));
+        assert_eq!(app.deletion_target_label(), "Work (empty folder)");
+        app.start_deletion();
+        app.confirm_move_right();
+        app.confirm_delete();
+
+        assert!(!app.folder_names().contains(&"Work".to_string()));
+        assert!(storage::load_folders(&app.folders_path).is_empty());
+        // The note itself is untouched.
+        assert_eq!(app.notes.len(), 1);
     }
 
     #[test]

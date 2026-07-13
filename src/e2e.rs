@@ -151,6 +151,20 @@ fn gallery() {
     h.key(KeyCode::Esc);
     h.key(KeyCode::Esc);
 
+    banner("NOTES · empty folder selected (cursor on header)");
+    let mut ef = Harness::new(
+        vec![],
+        vec![note(1, "Scratch pad", None)],
+        vec!["Archive".into()],
+    );
+    ef.ch('n'); // notes list; cursor starts on the empty "Archive" header
+    println!("{}", ef.render());
+
+    banner("NOTES · confirm delete empty folder");
+    ef.ch('d');
+    println!("{}", ef.render());
+    ef.key(KeyCode::Esc);
+
     banner("NOTES · search");
     h.ch('s').typ("gro");
     println!("{}", h.render());
@@ -233,7 +247,13 @@ fn move_picker_lists_folders_and_actions() {
 fn navigate_notes_list_after_creating_a_note() {
     let mut h = sample();
     h.ch('n'); // notes list
-    let before = h.app.visible_note_indices().len();
+    let visible_notes = |app: &crate::app::App| {
+        app.note_selections()
+            .iter()
+            .filter(|s| matches!(s, crate::app::NoteSelection::Note(_)))
+            .count()
+    };
+    let before = visible_notes(&h.app);
 
     // Create a note, type a title, save, and return to the list.
     h.ch('c'); // opens editor
@@ -246,7 +266,7 @@ fn navigate_notes_list_after_creating_a_note() {
 
     assert_eq!(h.app.view, crate::app::View::Notes);
     assert_eq!(
-        h.app.visible_note_indices().len(),
+        visible_notes(&h.app),
         before + 1,
         "new note should appear in the list"
     );
@@ -263,6 +283,34 @@ fn navigate_notes_list_after_creating_a_note() {
     let mid = h.app.selected_index;
     h.key(KeyCode::Down);
     assert!(h.app.selected_index >= mid);
+}
+
+#[test]
+fn empty_folder_can_be_selected_and_deleted_from_list() {
+    let mut h = Harness::new(
+        vec![],
+        vec![note(1, "Scratch pad", None)],
+        vec!["Archive".into()],
+    );
+    h.ch('n'); // notes list; cursor lands on the empty "Archive" header
+
+    // The header shows the selection marker, and the delete prompt names it.
+    let screen = h.render();
+    assert!(
+        screen.contains("▸ Archive"),
+        "header not selected:\n{screen}"
+    );
+
+    h.ch('d'); // open confirm-delete for the folder
+    let confirm = h.render();
+    assert!(
+        confirm.contains("Archive (empty folder)"),
+        "confirm should name the folder:\n{confirm}"
+    );
+
+    h.key(KeyCode::Right).key(KeyCode::Enter); // confirm
+    assert!(!h.app.folder_names().contains(&"Archive".to_string()));
+    assert_eq!(h.app.notes.len(), 1, "note is untouched");
 }
 
 #[test]

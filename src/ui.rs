@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::app::{
     App, FolderChoice, InputMode, NoteEntry, NoteMode, Panel, SideItem, View, VisibleEntry,
+    UNFILED_LABEL,
 };
 use crate::markdown;
 
@@ -432,18 +433,26 @@ fn render_note_list(frame: &mut Frame, area: Rect, app: &mut App) {
         .any(|e| matches!(e, NoteEntry::FolderHeader { .. }));
     let total_entries = entries.len();
 
-    // Keep the selected note visible, measuring in entry rows (headers count).
-    let sel = app.selected_index.min(count.saturating_sub(1));
+    // Keep the selected row visible, measuring in entry rows. Both notes and
+    // empty folder headers are cursor stops, so count them the same way
+    // `note_selections()` does.
+    let sel = app
+        .selected_index
+        .min(app.note_selections().len().saturating_sub(1));
     let mut selected_visual_pos = 0;
     {
-        let mut note_pos = 0;
+        let mut sel_pos = 0;
         for (pos, entry) in entries.iter().enumerate() {
-            if let NoteEntry::Note(_) = entry {
-                if note_pos == sel {
+            let selectable = matches!(
+                entry,
+                NoteEntry::Note(_) | NoteEntry::FolderHeader { count: 0, .. }
+            );
+            if selectable {
+                if sel_pos == sel {
                     selected_visual_pos = pos;
                     break;
                 }
-                note_pos += 1;
+                sel_pos += 1;
             }
         }
     }
@@ -458,10 +467,10 @@ fn render_note_list(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     app.list_scroll = app.list_scroll.min(max_scroll);
 
-    let selected_real = if app.panel == Panel::Main {
-        app.selected_note_index()
+    let (selected_real, selected_empty_folder) = if app.panel == Panel::Main {
+        (app.selected_note_index(), app.selected_empty_folder())
     } else {
-        None
+        (None, None)
     };
     let inner_w = (area.width as usize).saturating_sub(2);
 
@@ -470,16 +479,40 @@ fn render_note_list(frame: &mut Frame, area: Rect, app: &mut App) {
         .skip(app.list_scroll)
         .take(list_height)
         .map(|entry| match entry {
-            NoteEntry::FolderHeader { label, count } => ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("▾ {label}"),
-                    Style::default().fg(Color::Rgb(150, 150, 150)).bold(),
-                ),
-                Span::styled(
-                    format!("  ({count})"),
-                    Style::default().fg(Color::Rgb(90, 90, 90)),
-                ),
-            ])),
+            NoteEntry::FolderHeader { label, count } => {
+                let is_selected =
+                    *count == 0 && selected_empty_folder.as_deref() == Some(label.as_str());
+                // "No folder" is the ungrouped catch-all, not a real folder, so
+                // it gets no disclosure arrow and a dimmer label — the notes
+                // still align under it via the 2-space lead.
+                let unfiled = label == UNFILED_LABEL;
+                let marker = if is_selected {
+                    "▸ "
+                } else if unfiled {
+                    "  "
+                } else {
+                    "▾ "
+                };
+                let label_style = if is_selected {
+                    Style::default().fg(Color::White).bold()
+                } else if unfiled {
+                    Style::default().fg(Color::Rgb(110, 110, 110))
+                } else {
+                    Style::default().fg(Color::Rgb(150, 150, 150)).bold()
+                };
+                let line = Line::from(vec![
+                    Span::styled(format!("{marker}{label}"), label_style),
+                    Span::styled(
+                        format!("  ({count})"),
+                        Style::default().fg(Color::Rgb(90, 90, 90)),
+                    ),
+                ]);
+                if is_selected {
+                    ListItem::new(line.style(Style::default().bg(Color::Rgb(35, 40, 48))))
+                } else {
+                    ListItem::new(line)
+                }
+            }
             NoteEntry::Note(i) => {
                 let note = &app.notes[*i];
                 let is_selected = Some(*i) == selected_real;
