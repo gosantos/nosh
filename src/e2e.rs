@@ -230,6 +230,42 @@ fn move_picker_lists_folders_and_actions() {
 }
 
 #[test]
+fn navigate_notes_list_after_creating_a_note() {
+    let mut h = sample();
+    h.ch('n'); // notes list
+    let before = h.app.visible_note_indices().len();
+
+    // Create a note, type a title, save, and return to the list.
+    h.ch('c'); // opens editor
+    h.typ("# Fresh note");
+    h.key(KeyCode::Esc); // save -> viewing
+    h.key(KeyCode::Esc); // back to list
+
+    // The file watcher fires reload() after the save; simulate it here.
+    h.app.reload();
+
+    assert_eq!(h.app.view, crate::app::View::Notes);
+    assert_eq!(
+        h.app.visible_note_indices().len(),
+        before + 1,
+        "new note should appear in the list"
+    );
+
+    let start = h.app.selected_index;
+    h.key(KeyCode::Up); // scroll up in the list
+    assert!(
+        h.app.selected_index < start || start == 0,
+        "Up should move the selection up (was {start}, now {})",
+        h.app.selected_index
+    );
+
+    // And down should move back.
+    let mid = h.app.selected_index;
+    h.key(KeyCode::Down);
+    assert!(h.app.selected_index >= mid);
+}
+
+#[test]
 fn footer_shows_back_hint_in_note_view() {
     let mut h = sample();
     h.ch('n').key(KeyCode::Enter);

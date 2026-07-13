@@ -660,8 +660,15 @@ impl App {
         self.visible_indices().get(self.selected_index).copied()
     }
 
+    /// Clamps `selected_index` against whichever list the current view shows.
+    /// `selected_index` is shared across views, so clamping must follow the
+    /// active one — otherwise a reload in the notes list would clamp against
+    /// the (unrelated) todo count and snap the selection to the top.
     fn clamp_selection(&mut self) {
-        let count = self.visible_count();
+        let count = match self.view {
+            View::Todos => self.visible_count(),
+            View::Notes | View::Note => self.visible_note_indices().len(),
+        };
         if count == 0 {
             self.selected_index = 0;
         } else if self.selected_index >= count {
@@ -1174,6 +1181,31 @@ mod tests {
 
         assert!(app.todos.is_empty());
         assert_eq!(app.selected_index, 0);
+    }
+
+    #[test]
+    fn reload_preserves_notes_selection_regardless_of_todo_count() {
+        // With fewer todos than the notes cursor position, a reload (fired by
+        // the file watcher after any save) used to clamp the shared
+        // selected_index against the todo count and snap the notes list to top.
+        let (_dir, mut app) = setup(
+            vec![],
+            vec![make_note(1, "a"), make_note(2, "b"), make_note(3, "c")],
+        );
+        app.view = View::Notes;
+        app.selected_index = 2;
+
+        app.reload();
+
+        assert_eq!(
+            app.selected_index, 2,
+            "notes selection must survive a reload with no todos"
+        );
+
+        // And an out-of-range notes selection still clamps to the last note.
+        app.selected_index = 9;
+        app.reload();
+        assert_eq!(app.selected_index, 2);
     }
 
     #[test]
